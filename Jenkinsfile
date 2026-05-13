@@ -72,7 +72,7 @@ pipeline {
         REPORTS_DIR       = 'pipeline-reports'
         TRIVY_CACHE_DIR   = '/tmp/.trivy-cache'
         NODE_ENV          = 'test'
-        DOCKER_BUILDKIT   = '1'
+        DOCKER_BUILDKIT   = '0'
         SMOKE_PORT        = '19090'
         SMOKE_CONTAINER   = "banking-smoke-${env.BUILD_NUMBER ?: '0'}"
         // Credentials — NEXUS_CREDS_USR / NEXUS_CREDS_PSW auto-injected
@@ -309,7 +309,9 @@ pipeline {
                         sh -c 'npm run test:unit -- \
                                  --ci \
                                  --coverage \
-                                 --coverageReporters=lcov,text,json-summary \
+                                 --coverageReporters=lcov \
+                                 --coverageReporters=text \
+                                 --coverageReporters=json-summary \
                                  --coverageDirectory=${REPORTS_DIR}/coverage \
                                  --forceExit 2>&1 | tee ${REPORTS_DIR}/jest-unit.log'
                 """
@@ -374,7 +376,7 @@ pipeline {
                         --build-arg DEPLOY_ENV="${params.DEPLOY_ENV}" \
                         --label "pipeline.build=${env.BUILD_TAG}" \
                         --cache-from "${NEXUS_URL}/${NEXUS_DOCKER_REPO}/${APP_NAME}:cache" \
-                        --progress=plain \
+                        --no-cache=false \
                         . 2>&1
 
                     echo "✅ Image built: ${env.IMAGE_REF}"

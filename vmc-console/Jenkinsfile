@@ -148,8 +148,8 @@ pipeline {
         OWASP_FAIL_SCORE  = '8'    // CVSS ≥ 8 → fail
 
         // ── Docker BuildKit ───────────────────────────────────────────────────
-        DOCKER_BUILDKIT   = '1'
-        BUILDKIT_PROGRESS = 'plain'
+        DOCKER_BUILDKIT   = '0'
+        BUILDKIT_PROGRESS = 'auto'
 
         // ── Paths & ports ─────────────────────────────────────────────────────
         APP_DIR           = "${WORKSPACE}/vmc-console"
