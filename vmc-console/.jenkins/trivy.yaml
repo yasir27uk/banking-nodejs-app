@@ -25,17 +25,11 @@ vulnerability:
     - os
     - library
 
-secret:
-  config: /config/trivy-secret.yaml
-
 misconfiguration:
   exit-code: 0              # Misconfig findings are advisory only
 
 # Output
 format: json
-
-# Policies
-ignorefile: /config/.trivyignore
 
 # Performance
 timeout: 10m

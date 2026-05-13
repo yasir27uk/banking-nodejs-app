@@ -376,7 +376,6 @@ pipeline {
                         --build-arg DEPLOY_ENV="${params.DEPLOY_ENV}" \
                         --label "pipeline.build=${env.BUILD_TAG}" \
                         --cache-from "${NEXUS_URL}/${NEXUS_DOCKER_REPO}/${APP_NAME}:cache" \
-                        --no-cache=false \
                         . 2>&1
 
                     echo "✅ Image built: ${env.IMAGE_REF}"
