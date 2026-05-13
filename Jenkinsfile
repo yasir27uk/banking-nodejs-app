@@ -36,7 +36,7 @@
 // ── Global pipeline configuration (local overrides) ─────────────────────────
 def GLOBAL_CONFIG = [
     // Nexus — local Docker Desktop instance
-    nexusUrl          : 'http://localhost:80',
+    nexusUrl          : 'localhost:80',
     nexusCredId       : 'nexus-credentials',
     nexusDockerRepo   : 'repository/docker-hosted',
 
@@ -375,7 +375,6 @@ pipeline {
                         --build-arg GIT_COMMIT="${env.GIT_SHORT}" \
                         --build-arg DEPLOY_ENV="${params.DEPLOY_ENV}" \
                         --label "pipeline.build=${env.BUILD_TAG}" \
-                        --cache-from "${NEXUS_URL}/${NEXUS_DOCKER_REPO}/${APP_NAME}:cache" \
                         . 2>&1
 
                     echo "✅ Image built: ${env.IMAGE_REF}"
@@ -603,7 +602,7 @@ pipeline {
                     }
 
                     sh """
-                        BASE="http://localhost:${SMOKE_PORT}"
+                        BASE="http://host.docker.internal:${SMOKE_PORT}"
                         echo "── Smoke Assertions ────────────────────────────"
 
                         STATUS=\$(curl -so /dev/null -w '%{http_code}' "\${BASE}/health")

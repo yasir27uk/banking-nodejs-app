@@ -682,7 +682,7 @@ pipeline {
 
                     // ── HTTP assertions ───────────────────────────────────────
                     sh """
-                        BASE="http://localhost:${SMOKE_PORT}"
+                        BASE="http://host.docker.internal:${SMOKE_PORT}"
 
                         echo "\\n────── Smoke Tests ──────────────────────────────"
 
