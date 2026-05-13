@@ -640,6 +640,8 @@ pipeline {
                 docker rmi "${env.IMAGE_REF ?: 'none'}" 2>/dev/null || true
                 docker rmi "${NEXUS_URL}/${NEXUS_DOCKER_REPO}/${APP_NAME}:latest" 2>/dev/null || true
                 docker image prune -f 2>/dev/null || true
+                docker run --rm --volumes-from \$(hostname) alpine \
+                    chmod -R 777 "${WORKSPACE}" 2>/dev/null || true
             """
             cleanWs(deleteDirs: true, notFailBuild: true,
                     patterns: [[pattern: "${REPORTS_DIR}/**", type: 'EXCLUDE']])

@@ -763,6 +763,8 @@ pipeline {
                 docker rmi '${FULL_IMAGE}:${SAFE_BRANCH}-latest'  2>/dev/null || true
                 docker rmi '${FULL_IMAGE}:latest'                 2>/dev/null || true
                 docker image prune -f                              2>/dev/null || true
+                docker run --rm --volumes-from \$(hostname) alpine \
+                    chmod -R 777 "${WORKSPACE}" 2>/dev/null || true
             """
 
             // Clean workspace but preserve reports
