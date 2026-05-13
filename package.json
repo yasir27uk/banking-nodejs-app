@@ -1,0 +1,39 @@
+{
+  "name": "banking-nodejs-app",
+  "version": "1.0.0",
+  "description": "Enterprise Banking Node.js REST API",
+  "main": "app.js",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node app.js",
+    "dev": "nodemon app.js",
+    "test:unit": "jest --testPathPattern=tests/unit --reporters=default --testResultsProcessor=jest-junit",
+    "test:integration": "jest --testPathPattern=tests/integration --reporters=default --testResultsProcessor=jest-junit",
+    "test:smoke": "jest --testPathPattern=tests/smoke --reporters=default --forceExit",
+    "lint": "eslint src/ app.js --ext .js",
+    "lint:security": "eslint src/ app.js --ext .js --rulesdir .eslint-security-rules"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "helmet": "^7.1.0",
+    "express-rate-limit": "^7.1.5",
+    "morgan": "^1.10.0",
+    "uuid": "^9.0.0"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "jest-junit": "^16.0.0",
+    "supertest": "^6.3.4",
+    "eslint": "^8.57.0",
+    "eslint-plugin-security": "^2.1.0"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "testTimeout": 15000,
+    "reporters": [
+      "default",
+      ["jest-junit", { "outputDirectory": ".", "outputName": "junit.xml" }]
+    ],
+    "collectCoverageFrom": ["src/**/*.js", "app.js"]
+  }
+}
