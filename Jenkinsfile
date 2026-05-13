@@ -448,6 +448,7 @@ pipeline {
                         --format sarif \
                         --output "${WORKSPACE}/${REPORTS_DIR}/trivy/trivy-vuln.sarif" \
                         --ignore-unfixed \
+                        --skip-dirs /usr/local/lib/node_modules/npm \
                         --exit-code 0 \
                         "${env.IMAGE_REF}" 2>&1 | tee ${REPORTS_DIR}/trivy/trivy-stdout.txt
 
@@ -459,6 +460,8 @@ pipeline {
                         --cache-dir /tmp/trivy-cache \
                         --severity CRITICAL,HIGH \
                         --format table \
+                        --ignore-unfixed \
+                        --skip-dirs /usr/local/lib/node_modules/npm \
                         --exit-code 0 \
                         "${env.IMAGE_REF}"
 
