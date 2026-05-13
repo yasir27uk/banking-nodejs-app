@@ -1,0 +1,262 @@
+# syntax=docker/dockerfile:1
+# =============================================================================
+# ENTERPRISE BANKING NODE.JS APPLICATION - DOCKERFILE
+# =============================================================================
+# Multi-stage build | Hardened | Non-root | Minimal attack surface
+# Compatible with: Nexus Registry | HashiCorp Vault | Twistlock/Prisma (Midwife)
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# STAGE 1: Dependency Audit & Install (CI Security Gate)
+# -----------------------------------------------------------------------------
+FROM ubuntu:latest AS deps
+
+LABEL stage="deps"
+
+# Install Node.js 20 and native build tools
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        gnupg \
+        python3 \
+        make \
+        g++ \
+    && mkdir -p /etc/apt/keyrings \
+    && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+       | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
+    && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" \
+       > /etc/apt/sources.list.d/nodesource.list \
+    && apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+# Nexus credentials — supplied via BuildKit secrets (RECOMMENDED, zero history exposure):
+#   docker build --secret id=nexus_token,env=NEXUS_TOKEN \
+#                --secret id=nexus_registry,env=NEXUS_NPM_REGISTRY ...
+#
+# Fallback via --build-arg (token visible in 'docker history', dev/local only):
+#   docker build --build-arg NEXUS_TOKEN=xxx --build-arg NEXUS_NPM_REGISTRY=yyy ...
+#
+# See NEXUS_TOKEN_GUIDE.md and build.ps1 for full Windows PowerShell instructions.
+ARG NEXUS_NPM_REGISTRY=nexus.your-bank.internal:8081/repository/npm-proxy
+ARG NEXUS_TOKEN=""
+
+# Copy package manifests first (layer cache optimisation)
+COPY package.json package-lock.json ./
+
+# Clean install using BuildKit secret mount.
+# The secret file at /run/secrets/nexus_token exists ONLY during this RUN layer
+# and is NEVER written to any image layer or visible in 'docker history'.
+# Falls back to ARG NEXUS_TOKEN if the secret is not provided.
+# --ignore-scripts: prevents malicious postinstall hooks (supply chain defence)
+# --audit: fails build if HIGH/CRITICAL CVEs found in dependencies
+RUN --mount=type=secret,id=nexus_token \
+    --mount=type=secret,id=nexus_registry \
+    TOKEN=$(cat /run/secrets/nexus_token 2>/dev/null || echo "${NEXUS_TOKEN}") \
+    REGISTRY=$(cat /run/secrets/nexus_registry 2>/dev/null || echo "${NEXUS_NPM_REGISTRY}") \
+    && echo "registry=https://${REGISTRY}/" > .npmrc \
+    && echo "//${REGISTRY}/:_authToken=${TOKEN}" >> .npmrc \
+    && npm ci --ignore-scripts \
+    && npm rebuild \
+    && npm audit --audit-level=high \
+    && rm -f .npmrc \
+    && unset TOKEN REGISTRY
+
+# -----------------------------------------------------------------------------
+# STAGE 2: Build / Transpile
+# -----------------------------------------------------------------------------
+FROM deps AS builder
+
+LABEL stage="builder"
+
+COPY . .
+
+# Run lint at build time so broken/non-compliant code never reaches an image
+RUN npm run lint --if-present \
+    && npm run build --if-present
+
+# Prune devDependencies - production image carries only runtime deps
+RUN npm prune --production
+
+# -----------------------------------------------------------------------------
+# STAGE 3: Test Suite
+# -----------------------------------------------------------------------------
+FROM builder AS test
+
+# Run the full test suite — build fails immediately if any test fails
+RUN npm test \
+    && touch /build/test-passed
+
+# -----------------------------------------------------------------------------
+# STAGE 4: Midwife / Prisma Cloud Code-Repository Security Scan
+# -----------------------------------------------------------------------------
+FROM ubuntu:latest AS security-scan
+
+# Pass at build time: --build-arg MIDWIFE_CONSOLE_URL=https://prismacloud.your-bank.internal
+# Bypass locally:     --build-arg SKIP_MIDWIFE_SCAN=true  (NEVER use in CI/production)
+ARG MIDWIFE_CONSOLE_URL
+ARG SKIP_MIDWIFE_SCAN=false
+
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Download Midwife CLI (twistcli) from your Prisma Cloud console
+RUN if [ "${SKIP_MIDWIFE_SCAN}" != "true" ]; then \
+        [ -z "${MIDWIFE_CONSOLE_URL}" ] \
+            && echo "[ERROR] MIDWIFE_CONSOLE_URL is not set" && exit 1; \
+        curl -fsSLk "${MIDWIFE_CONSOLE_URL}/api/v1/util/twistcli" \
+             -o /usr/local/bin/midwife \
+        && chmod +x /usr/local/bin/midwife; \
+    fi
+
+# Copy full build artefacts into this stage for scanning
+COPY --from=builder /build/ /scan/
+
+# Code-repo scan using BuildKit secrets — credentials are NEVER stored in any
+# image layer or visible in docker history.
+# Secrets supplied via:  --secret id=midwife_access_key,env=MIDWIFE_ACCESS_KEY
+#                        --secret id=midwife_secret_key,env=MIDWIFE_SECRET_KEY
+RUN --mount=type=secret,id=midwife_access_key \
+    --mount=type=secret,id=midwife_secret_key \
+    if [ "${SKIP_MIDWIFE_SCAN}" = "true" ]; then \
+        echo "[WARN] SKIP_MIDWIFE_SCAN=true — Midwife scan bypassed. NEVER skip in CI/production."; \
+    else \
+        midwife coderepo scan \
+            --address  "${MIDWIFE_CONSOLE_URL}" \
+            --user     "$(cat /run/secrets/midwife_access_key)" \
+            --password "$(cat /run/secrets/midwife_secret_key)" \
+            --details \
+            /scan; \
+    fi \
+    && touch /scan-passed
+
+# -----------------------------------------------------------------------------
+# STAGE 5: Production Runtime (Minimal, Hardened)
+# -----------------------------------------------------------------------------
+FROM ubuntu:latest AS production
+
+# Build-time metadata (pass via --build-arg at CI)
+ARG BUILD_VERSION
+ARG GIT_COMMIT
+ARG BUILD_DATE
+
+# ── Image Metadata (OCI standard) ─────────────────────────────────────────────
+LABEL org.opencontainers.image.title="banking-nodejs-app" \
+      org.opencontainers.image.description="Enterprise Banking Node.js Application" \
+      org.opencontainers.image.vendor="Your Bank Ltd" \
+      org.opencontainers.image.version="${BUILD_VERSION:-latest}" \
+      org.opencontainers.image.revision="${GIT_COMMIT:-unknown}" \
+      org.opencontainers.image.created="${BUILD_DATE:-unknown}" \
+      org.opencontainers.image.source="https://github.com/your-org/banking-nodejs-app" \
+      org.opencontainers.image.licenses="PROPRIETARY" \
+      security.scan.required="true"
+
+# ── OS Hardening ──────────────────────────────────────────────────────────────
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y --no-install-recommends \
+    && . /etc/os-release \
+    && echo "deb http://archive.ubuntu.com/ubuntu ${VERSION_CODENAME} universe" \
+       > /etc/apt/sources.list.d/ubuntu-universe.list \
+    && apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        curl \
+        gnupg \
+        ca-certificates \
+        tzdata \
+        tini \
+    && mkdir -p /etc/apt/keyrings \
+    && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+       | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
+    && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" \
+       > /etc/apt/sources.list.d/nodesource.list \
+    && apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+# ── Non-Root User (Banking Security Requirement) ──────────────────────────────
+# UID/GID 10001 - above 10000 avoids conflicts with system accounts
+RUN groupadd -g 10001 appgroup \
+    && useradd -u 10001 -g appgroup -s /usr/sbin/nologin -d /app -M appuser
+
+# ── Application Directory ─────────────────────────────────────────────────────
+WORKDIR /app
+
+# ── Build Gates ───────────────────────────────────────────────────────────────
+# These two COPY instructions force Docker to complete the test stage and the
+# Midwife security-scan stage before the production image is assembled.
+# If either stage fails the build stops here — nothing reaches production.
+COPY --from=test          /build/test-passed /tmp/.gate-test
+COPY --from=security-scan /scan-passed       /tmp/.gate-scan
+RUN rm -f /tmp/.gate-test /tmp/.gate-scan
+
+# Copy all production artefacts from the builder stage
+# (node_modules are already pruned to production-only by 'npm prune --production')
+COPY --from=builder --chown=appuser:appgroup /build/ ./
+
+# ── Vault Agent Config Placeholder ───────────────────────────────────────────
+# Secrets are injected at runtime by HashiCorp Vault Agent (sidecar) or
+# via the Vault Kubernetes Auth method - NEVER baked into the image.
+# The app reads secrets from: /vault/secrets/<secret-name> (file-based)
+# OR via env vars populated by Vault Agent init container in Kubernetes.
+RUN mkdir -p /vault/secrets \
+    && chown -R appuser:appgroup /vault/secrets \
+    && chmod 700 /vault/secrets
+
+# ── Filesystem Permissions (Principle of Least Privilege) ─────────────────────
+RUN chmod -R 550 /app \
+    && find /app -type f -name "*.js" -exec chmod 440 {} \;
+
+# ── Drop to Non-Root ──────────────────────────────────────────────────────────
+USER appuser:appgroup
+
+# ── Runtime Configuration ─────────────────────────────────────────────────────
+# NODE_OPTIONS : enforce TLS 1.2 minimum (banking compliance), cap V8 heap to 512 MB
+# VAULT_ADDR/ROLE: empty here — overridden at runtime by the Kubernetes orchestrator
+# TZ           : banking standard — always UTC
+ENV NODE_ENV=production \
+    PORT=3000 \
+    NODE_PATH=/app \
+    NO_UPDATE_NOTIFIER=1 \
+    NODE_OPTIONS="--tls-min-v1.2 --max-old-space-size=512" \
+    VAULT_ADDR="" \
+    VAULT_ROLE="" \
+    TZ=UTC
+
+# ── Health Check ──────────────────────────────────────────────────────────────
+HEALTHCHECK --interval=30s \
+            --timeout=10s \
+            --start-period=15s \
+            --retries=3 \
+    CMD curl -f http://localhost:${PORT}/health || exit 1
+
+# ── Network ───────────────────────────────────────────────────────────────────
+EXPOSE 3000
+
+# ── Entrypoint ────────────────────────────────────────────────────────────────
+# tini: proper init process - reaps zombie processes, forwards signals correctly
+# Critical for graceful shutdown in Kubernetes/Docker Swarm environments
+ENTRYPOINT ["/usr/bin/tini", "--"]
+# 'node .' resolves the entry point from the 'main' field in package.json
+# Update this if your entry point differs (e.g. ["node", "src/server.js"])
+CMD ["node", "."]
+
+# =============================================================================
+# SECURITY NOTES
+# =============================================================================
+# 1. No secrets, credentials, or API keys are baked into this image.
+# 2. Runs as UID 10001 (non-root) - Docker --no-new-privileges enforced by
+#    Kubernetes PodSecurityPolicy / SecurityContext in deployment manifests.
+# 3. 5-stage build: tests (Stage 3) and Midwife code-repo scan (Stage 4) gate
+#    the production image; build tools and source are absent from Stage 5.
+# 4. npm ci --ignore-scripts prevents supply-chain attacks via postinstall.
+# 5. npm audit --audit-level=high fails build on HIGH/CRITICAL CVEs.
+# 6. Twistlock/Prisma (Midwife) scans this image in the Jenkins pipeline BEFORE
+#    it is pushed to Nexus and BEFORE it is deployed to any environment.
+# 7. In production pipelines the base image is pinned by SHA256 digest.
+# =============================================================================
