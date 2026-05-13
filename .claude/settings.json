@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -c \"import json; print\\(json.load\\(open\\('/tmp/crumb.json'\\)\\)['crumb']\\)\")",
+      "Bash(curl -sk -c /tmp/jenkins-cookies.txt -u admin:BeyondTrust_Adm1n! https://localhost:8443/crumbIssuer/api/json)",
+      "Bash(curl -sk -b /tmp/jenkins-cookies.txt -u admin:BeyondTrust_Adm1n! -H 'Jenkins-Crumb: __TRACKED_VAR__' -X POST https://localhost:8443/job/vmc/job/vmc-console-cicd/17/stop -w 'Stop VMC #17: %{http_code}\\\\n')"
+    ]
+  }
+}
