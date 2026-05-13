@@ -436,8 +436,6 @@ pipeline {
                         --label 'pipeline.job=${JOB_NAME}' \\
                         --label 'pipeline.build=${BUILD_NUMBER}' \\
                         --label 'pipeline.url=${BUILD_URL}' \\
-                        --cache-from '${FULL_IMAGE}:cache' \\
-                        --cache-from '${FULL_IMAGE}:latest' \\
                         -t '${FULL_IMAGE}:${BUILD_VERSION}' \\
                         -t '${FULL_IMAGE}:${SAFE_BRANCH}-latest' \\
                         -f "${APP_DIR}/Dockerfile" \\

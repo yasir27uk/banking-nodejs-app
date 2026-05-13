@@ -161,7 +161,7 @@ pipeline {
                     env.GIT_SHORT     = gitCommitShort
                     env.BUILD_TS      = buildTimestamp
 
-                    sh "mkdir -p ${REPORTS_DIR}/{npm-audit,sast,sca,trivy,zap,coverage,licence}"
+                    sh "mkdir -p ${REPORTS_DIR}/npm-audit ${REPORTS_DIR}/sast ${REPORTS_DIR}/sca ${REPORTS_DIR}/trivy ${REPORTS_DIR}/zap ${REPORTS_DIR}/coverage ${REPORTS_DIR}/licence"
 
                     writeJSON file: "${REPORTS_DIR}/pipeline-meta.json", json: [
                         pipelineId  : env.BUILD_TAG,
