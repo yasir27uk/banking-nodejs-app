@@ -102,6 +102,11 @@ pipeline {
             description: 'Target deployment environment'
         )
         booleanParam(
+            name: 'SKIP_OWASP',
+            defaultValue: true,
+            description: 'Skip OWASP Dependency-Check (downloads 350K CVE records ~30min without NVD API key)'
+        )
+        booleanParam(
             name: 'SKIP_DAST',
             defaultValue: true,
             description: 'Skip DAST / ZAP scan (disable only when a live target URL is available)'
@@ -387,6 +392,7 @@ pipeline {
         // STAGE 7 — SCA: OWASP Dependency-Check
         // ─────────────────────────────────────────────────────────────────────
         stage('SCA — OWASP Dependency-Check') {
+            when { expression { !params.SKIP_OWASP } }
             steps {
                 script {
                     def nvdKey = ''
