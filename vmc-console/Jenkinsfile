@@ -221,7 +221,7 @@ pipeline {
                 sh """
                     echo "Installing dependencies using ${NODEJS_BASE}..."
                     docker run --rm \\
-                        --volumes-from $(hostname) \\
+                        --volumes-from \$(hostname) \\
                         -w "${WORKSPACE}" \\
                         -e HOME=/tmp \\
                         -e NODE_OPTIONS='--max-old-space-size=2048' \\
@@ -239,7 +239,7 @@ pipeline {
                     steps {
                         sh """
                             docker run --rm \\
-                                --volumes-from $(hostname) \\
+                                --volumes-from \$(hostname) \\
                                 -w "${WORKSPACE}" \\
                                 -e HOME=/tmp \\
                                 '${NODEJS_BASE}' \\
@@ -258,7 +258,7 @@ pipeline {
                     steps {
                         sh """
                             docker run --rm \\
-                                --volumes-from $(hostname) \\
+                                --volumes-from \$(hostname) \\
                                 -w "${WORKSPACE}" \\
                                 -e HOME=/tmp \\
                                 '${NODEJS_BASE}' \\
@@ -302,7 +302,7 @@ pipeline {
                     steps {
                         sh """
                             docker run --rm \\
-                                --volumes-from $(hostname) \\
+                                --volumes-from \$(hostname) \\
                                 zricethezav/gitleaks:latest \\
                                 detect \\
                                 --source="${WORKSPACE}" \\
@@ -340,7 +340,7 @@ pipeline {
                     steps {
                         sh """
                             docker run --rm \\
-                                --volumes-from $(hostname) \\
+                                --volumes-from \$(hostname) \\
                                 -w "${WORKSPACE}" \\
                                 semgrep/semgrep:latest \\
                                 semgrep scan \\
@@ -386,7 +386,7 @@ pipeline {
             steps {
                 sh """
                     docker run --rm \\
-                        --volumes-from $(hostname) \\
+                        --volumes-from \$(hostname) \\
                         owasp/dependency-check:latest \\
                         --project 'vmc-console' \\
                         --scan "${WORKSPACE}" \\
@@ -456,7 +456,7 @@ pipeline {
                 sh """
                     docker run --rm \\
                         -v /var/run/docker.sock:/var/run/docker.sock \\
-                        --volumes-from $(hostname) \\
+                        --volumes-from \$(hostname) \\
                         aquasec/trivy:latest \\
                         image \\
                         --format cyclonedx \\
@@ -469,7 +469,7 @@ pipeline {
                 sh """
                     docker run --rm \\
                         -v /var/run/docker.sock:/var/run/docker.sock \\
-                        --volumes-from $(hostname) \\
+                        --volumes-from \$(hostname) \\
                         aquasec/trivy:latest \\
                         image \\
                         --config "${WORKSPACE}/.jenkins/trivy.yaml" \\
@@ -485,7 +485,7 @@ pipeline {
                     echo "\\n───────── Trivy Vulnerability Summary ─────────"
                     docker run --rm \\
                         -v /var/run/docker.sock:/var/run/docker.sock \\
-                        --volumes-from $(hostname) \\
+                        --volumes-from \$(hostname) \\
                         aquasec/trivy:latest \\
                         image \\
                         --config "${WORKSPACE}/.jenkins/trivy.yaml" \\

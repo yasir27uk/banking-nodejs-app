@@ -200,7 +200,7 @@ pipeline {
                 checkout scm
                 sh """
                     docker run --rm \
-                        --volumes-from $(hostname) -w "${WORKSPACE}" \
+                        --volumes-from \$(hostname) -w "${WORKSPACE}" \
                         -e HOME=/tmp \
                         node:${GLOBAL_CONFIG.nodeVersion}-alpine \
                         sh -c 'npm install -g @cyclonedx/cyclonedx-npm --quiet 2>/dev/null; \
@@ -219,7 +219,7 @@ pipeline {
             steps {
                 sh """
                     docker run --rm \
-                        --volumes-from $(hostname) -w "${WORKSPACE}" \
+                        --volumes-from \$(hostname) -w "${WORKSPACE}" \
                         -e HOME=/tmp \
                         -e NODE_ENV=development \
                         node:${GLOBAL_CONFIG.nodeVersion}-alpine \
@@ -253,7 +253,7 @@ pipeline {
                     steps {
                         sh """
                             docker run --rm \
-                                --volumes-from $(hostname) -w "${WORKSPACE}" \
+                                --volumes-from \$(hostname) -w "${WORKSPACE}" \
                                 semgrep/semgrep:latest \
                                 semgrep scan \
                                   --config=p/nodejs \
@@ -282,7 +282,7 @@ pipeline {
                     steps {
                         sh """
                             docker run --rm \
-                                --volumes-from $(hostname) -w "${WORKSPACE}" \
+                                --volumes-from \$(hostname) -w "${WORKSPACE}" \
                                 -e HOME=/tmp \
                                 node:${GLOBAL_CONFIG.nodeVersion}-alpine \
                                 sh -c 'npm run lint:security -- \
@@ -303,7 +303,7 @@ pipeline {
             steps {
                 sh """
                     docker run --rm \
-                        --volumes-from $(hostname) -w "${WORKSPACE}" \
+                        --volumes-from \$(hostname) -w "${WORKSPACE}" \
                         -e HOME=/tmp -e NODE_ENV=test \
                         node:${GLOBAL_CONFIG.nodeVersion}-alpine \
                         sh -c 'npm run test:unit -- \
@@ -343,7 +343,7 @@ pipeline {
             steps {
                 sh """
                     docker run --rm \
-                        --volumes-from $(hostname) -w "${WORKSPACE}" \
+                        --volumes-from \$(hostname) -w "${WORKSPACE}" \
                         -e HOME=/tmp -e NODE_ENV=test \
                         -e DB_URI="memory://test" \
                         -e JWT_SECRET="test-secret-for-ci-only" \
@@ -398,7 +398,7 @@ pipeline {
 
                     sh """
                         docker run --rm \
-                            --volumes-from $(hostname) \
+                            --volumes-from \$(hostname) \
                             owasp/dependency-check:latest \
                             --project "${APP_NAME}" \
                             --scan "${WORKSPACE}" \
@@ -434,7 +434,7 @@ pipeline {
                     # SBOM + vulnerability scan — non-fatal exit so we can archive
                     docker run --rm \
                         -v /var/run/docker.sock:/var/run/docker.sock \
-                        --volumes-from $(hostname) \
+                        --volumes-from \$(hostname) \
                         -v "\${TRIVY_CACHE_DIR}:/tmp/trivy-cache" \
                         aquasec/trivy:latest image \
                         --cache-dir /tmp/trivy-cache \
@@ -483,7 +483,7 @@ pipeline {
                     ZAP_TARGET="http://host.docker.internal:${SMOKE_PORT}"
 
                     docker run --rm \
-                        --volumes-from $(hostname) \
+                        --volumes-from \$(hostname) \
                         ghcr.io/zaproxy/zaproxy:stable \
                         zap-baseline.py \
                         -t "\${ZAP_TARGET}" \
@@ -514,13 +514,13 @@ pipeline {
                 withCredentials([string(credentialsId: 'fossa-api-key', variable: 'FOSSA_API_KEY')]) {
                     sh """
                         docker run --rm \
-                            --volumes-from $(hostname) -w "${WORKSPACE}" \
+                            --volumes-from \$(hostname) -w "${WORKSPACE}" \
                             -e FOSSA_API_KEY="\${FOSSA_API_KEY}" \
                             fossas/fossa-cli:latest \
                             analyze --debug 2>&1 | tee ${REPORTS_DIR}/licence/fossa-analyze.log || true
 
                         docker run --rm \
-                            --volumes-from $(hostname) -w "${WORKSPACE}" \
+                            --volumes-from \$(hostname) -w "${WORKSPACE}" \
                             -e FOSSA_API_KEY="\${FOSSA_API_KEY}" \
                             fossas/fossa-cli:latest \
                             test --json 2>&1 > ${REPORTS_DIR}/licence/fossa-test.json || true
