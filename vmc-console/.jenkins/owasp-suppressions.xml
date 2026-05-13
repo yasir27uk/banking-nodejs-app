@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  OWASP Dependency-Check Suppressions
+  VMC Console - Enterprise Security Pipeline
+
+  Use this file to suppress confirmed false positives.
+  Each suppression MUST include:
+    - <notes>  : reason for suppression + reviewer name + date
+    - Expiry   : suppressions older than 90 days should be reviewed
+
+  Format reference:
+    https://jeremylong.github.io/DependencyCheck/general/suppression.html
+-->
+<suppressions xmlns="https://jeremylong.github.io/DependencyCheck/dependency-suppression.1.3.xsd">
+
+  <!--
+  EXAMPLE SUPPRESSION — Remove or replace with real findings
+  <suppress until="2025-12-31Z">
+    <notes>
+      CVE-2023-XXXXX: False positive — the vulnerable function is only used
+      in server-side rendering which is disabled (static export).
+      Reviewed by: platform-security-team | 2025-01-01
+    </notes>
+    <cve>CVE-2023-XXXXX</cve>
+  </suppress>
+  -->
+
+  <!--
+  Node.js / npm ecosystem notes:
+    Many CVEs in transitive dependencies are not reachable in a Next.js
+    static export served by nginx. Add suppressions here ONLY after confirming
+    the code path is unreachable and documenting the justification.
+  -->
+
+</suppressions>

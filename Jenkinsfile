@@ -128,7 +128,7 @@ pipeline {
         )
         string(
             name: 'IMAGE_TAG_OVERRIDE',
-            defaultValue: '',
+            defaultValue: 'latest',
             description: 'Override image tag (leave empty for auto: build#-commit-timestamp)'
         )
         string(
@@ -200,7 +200,7 @@ pipeline {
                 checkout scm
                 sh """
                     docker run --rm \
-                        -v "${WORKSPACE}:/app" -w /app \
+                        --volumes-from $(hostname) -w "${WORKSPACE}" \
                         -e HOME=/tmp \
                         node:${GLOBAL_CONFIG.nodeVersion}-alpine \
                         sh -c 'npm install -g @cyclonedx/cyclonedx-npm --quiet 2>/dev/null; \
@@ -219,7 +219,7 @@ pipeline {
             steps {
                 sh """
                     docker run --rm \
-                        -v "${WORKSPACE}:/app" -w /app \
+                        --volumes-from $(hostname) -w "${WORKSPACE}" \
                         -e HOME=/tmp \
                         -e NODE_ENV=development \
                         node:${GLOBAL_CONFIG.nodeVersion}-alpine \
@@ -253,7 +253,7 @@ pipeline {
                     steps {
                         sh """
                             docker run --rm \
-                                -v "${WORKSPACE}:/src" -w /src \
+                                --volumes-from $(hostname) -w "${WORKSPACE}" \
                                 semgrep/semgrep:latest \
                                 semgrep scan \
                                   --config=p/nodejs \
@@ -282,7 +282,7 @@ pipeline {
                     steps {
                         sh """
                             docker run --rm \
-                                -v "${WORKSPACE}:/app" -w /app \
+                                --volumes-from $(hostname) -w "${WORKSPACE}" \
                                 -e HOME=/tmp \
                                 node:${GLOBAL_CONFIG.nodeVersion}-alpine \
                                 sh -c 'npm run lint:security -- \
@@ -303,7 +303,7 @@ pipeline {
             steps {
                 sh """
                     docker run --rm \
-                        -v "${WORKSPACE}:/app" -w /app \
+                        --volumes-from $(hostname) -w "${WORKSPACE}" \
                         -e HOME=/tmp -e NODE_ENV=test \
                         node:${GLOBAL_CONFIG.nodeVersion}-alpine \
                         sh -c 'npm run test:unit -- \
@@ -343,7 +343,7 @@ pipeline {
             steps {
                 sh """
                     docker run --rm \
-                        -v "${WORKSPACE}:/app" -w /app \
+                        --volumes-from $(hostname) -w "${WORKSPACE}" \
                         -e HOME=/tmp -e NODE_ENV=test \
                         -e DB_URI="memory://test" \
                         -e JWT_SECRET="test-secret-for-ci-only" \
@@ -398,13 +398,12 @@ pipeline {
 
                     sh """
                         docker run --rm \
-                            -v "${WORKSPACE}:/src:ro" \
-                            -v "${WORKSPACE}/${REPORTS_DIR}/sca:/report" \
+                            --volumes-from $(hostname) \
                             owasp/dependency-check:latest \
                             --project "${APP_NAME}" \
-                            --scan /src \
+                            --scan "${WORKSPACE}" \
                             --format JSON --format HTML \
-                            --out /report \
+                            --out "${WORKSPACE}/${REPORTS_DIR}/sca" \
                             --failOnCVSS ${GLOBAL_CONFIG.cvssBlockThreshold} \
                             --enableExperimental \
                             --exclude '**/.git/**' \
@@ -435,13 +434,13 @@ pipeline {
                     # SBOM + vulnerability scan — non-fatal exit so we can archive
                     docker run --rm \
                         -v /var/run/docker.sock:/var/run/docker.sock \
-                        -v "${WORKSPACE}/${REPORTS_DIR}/trivy:/reports" \
+                        --volumes-from $(hostname) \
                         -v "\${TRIVY_CACHE_DIR}:/tmp/trivy-cache" \
                         aquasec/trivy:latest image \
                         --cache-dir /tmp/trivy-cache \
                         --severity CRITICAL,HIGH \
                         --format sarif \
-                        --output /reports/trivy-vuln.sarif \
+                        --output "${WORKSPACE}/${REPORTS_DIR}/trivy/trivy-vuln.sarif" \
                         --ignore-unfixed \
                         --exit-code 0 \
                         "${env.IMAGE_REF}" 2>&1 | tee ${REPORTS_DIR}/trivy/trivy-stdout.txt
@@ -484,12 +483,12 @@ pipeline {
                     ZAP_TARGET="http://host.docker.internal:${SMOKE_PORT}"
 
                     docker run --rm \
-                        -v "${WORKSPACE}/${REPORTS_DIR}/zap:/zap/wrk:rw" \
+                        --volumes-from $(hostname) \
                         ghcr.io/zaproxy/zaproxy:stable \
                         zap-baseline.py \
                         -t "\${ZAP_TARGET}" \
-                        -r zap-report.html \
-                        -J zap-report.json \
+                        -r "${WORKSPACE}/${REPORTS_DIR}/zap/zap-report.html" \
+                        -J "${WORKSPACE}/${REPORTS_DIR}/zap/zap-report.json" \
                         -l WARN \
                         -I 2>&1 | tee ${REPORTS_DIR}/zap/zap-stdout.txt || true
 
@@ -515,13 +514,13 @@ pipeline {
                 withCredentials([string(credentialsId: 'fossa-api-key', variable: 'FOSSA_API_KEY')]) {
                     sh """
                         docker run --rm \
-                            -v "${WORKSPACE}:/app" -w /app \
+                            --volumes-from $(hostname) -w "${WORKSPACE}" \
                             -e FOSSA_API_KEY="\${FOSSA_API_KEY}" \
                             fossas/fossa-cli:latest \
                             analyze --debug 2>&1 | tee ${REPORTS_DIR}/licence/fossa-analyze.log || true
 
                         docker run --rm \
-                            -v "${WORKSPACE}:/app" -w /app \
+                            --volumes-from $(hostname) -w "${WORKSPACE}" \
                             -e FOSSA_API_KEY="\${FOSSA_API_KEY}" \
                             fossas/fossa-cli:latest \
                             test --json 2>&1 > ${REPORTS_DIR}/licence/fossa-test.json || true

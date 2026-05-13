@@ -1,0 +1,7 @@
+# =============================================================================
+# Trivy — CVE Ignore List
+# Format: CVE-ID  # justification
+# =============================================================================
+# Add accepted / false-positive CVEs here with a justification comment.
+# Example:
+# CVE-2023-XXXXX  # Not exploitable — affected code path not reachable in nginx static serving

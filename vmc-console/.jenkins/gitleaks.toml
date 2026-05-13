@@ -1,0 +1,64 @@
+# =============================================================================
+# Gitleaks — Secret Detection Configuration
+# VMC Console — Enterprise Security Pipeline
+# =============================================================================
+title = "VMC Console Secret Scan"
+
+[extend]
+# Extend the default rules from the official Gitleaks ruleset
+useDefault = true
+
+# =============================================================================
+# Custom Rules (in addition to Gitleaks defaults)
+# =============================================================================
+[[rules]]
+id          = "nexus-token"
+description = "Nexus Repository Manager token"
+regex       = '''(?i)(nexus[_-]?token|nexus[_-]?password|nexus[_-]?secret)\s*[=:]\s*['"]?[a-zA-Z0-9+/=]{16,}['"]?'''
+tags        = ["nexus", "secret", "api-token"]
+
+[[rules]]
+id          = "vmware-api-token"
+description = "VMware Cloud API token"
+regex       = '''(?i)(vmc[_-]?token|vmware[_-]?api[_-]?key|vmc[_-]?refresh[_-]?token)\s*[=:]\s*['"]?[a-zA-Z0-9_-]{20,}['"]?'''
+tags        = ["vmware", "vmc", "api-token"]
+
+[[rules]]
+id          = "hardcoded-password-assignment"
+description = "Hardcoded password assignment pattern"
+regex       = '''(?i)(password|passwd|pwd)\s*[=:]\s*['"][^'"]{8,}['"]'''
+tags        = ["password", "hardcoded"]
+entropy     = 3.5
+
+# =============================================================================
+# Allowlist (false-positive suppression)
+# =============================================================================
+[allowlist]
+description = "Global allowlist for known false positives"
+regexes     = [
+    # Demo credentials explicitly shown in LoginPage.tsx
+    '''Admin123!''',
+    '''Dev123!''',
+    '''Readonly123!''',
+    # Test fixture values
+    '''test[_-]?password''',
+    '''example[_-]?key''',
+    # Placeholder templates
+    '''\$\{.*\}''',
+    # npm/yarn lock file hashes
+    '''integrity:\s+sha''',
+]
+paths = [
+    # Never scan lock files
+    '''package-lock\.json''',
+    '''yarn\.lock''',
+    # Never scan test fixtures
+    '''__tests__/''',
+    '''\.test\.(ts|tsx|js|jsx)$''',
+    # Never scan build output
+    '''\.next/''',
+    '''dist/''',
+    '''node_modules/''',
+    # Never scan the gitleaks config itself
+    '''\.jenkins/gitleaks\.toml''',
+]

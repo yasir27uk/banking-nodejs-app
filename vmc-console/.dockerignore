@@ -1,0 +1,22 @@
+# Build outputs (rebuilt inside container)
+node_modules
+dist
+.next
+
+# Runtime/local files
+.env
+.env.local
+.env.*.local
+npm-debug.log*
+
+# Dev tooling
+.git
+.gitignore
+.eslintrc*
+*.md
+*.test.*
+__tests__
+
+# Docker files themselves
+Dockerfile
+.dockerignore

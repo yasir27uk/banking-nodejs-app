@@ -1,0 +1,307 @@
+# =============================================================================
+# Jenkins Configuration as Code (JCasC)
+# VMC Console — Enterprise CI/CD
+# Target Jenkins: https://localhost:8443/
+# =============================================================================
+# Apply via: Manage Jenkins → Configuration as Code → Apply new configuration
+# Or mount as CASC_JENKINS_CONFIG=/var/jenkins_home/casc_configs/jenkins.yaml
+# =============================================================================
+
+jenkins:
+  systemMessage: |
+    ╔══════════════════════════════════════════════════════╗
+    ║  VMC Console — Enterprise Jenkins CI/CD             ║
+    ║  Managed by Jenkins Configuration as Code (JCasC)   ║
+    ║  DO NOT edit this instance manually.                ║
+    ╚══════════════════════════════════════════════════════╝
+
+  numExecutors: 0             # Master runs no jobs (agents only)
+
+  # ── Security ────────────────────────────────────────────────────────────────
+  securityRealm:
+    local:
+      allowsSignup: false
+      users:
+        - id: "admin"
+          password: "${JENKINS_ADMIN_PASSWORD}"   # injected via env var / secret
+
+  authorizationStrategy:
+    roleBased:
+      roles:
+        global:
+          - name: "admin"
+            description: "Jenkins administrators"
+            permissions:
+              - "Overall/Administer"
+            entries:
+              - user: "admin"
+          - name: "developer"
+            description: "Pipeline read and build"
+            permissions:
+              - "Overall/Read"
+              - "Job/Build"
+              - "Job/Cancel"
+              - "Job/Read"
+              - "View/Read"
+            entries:
+              - group: "developers"
+          - name: "readonly"
+            description: "Read-only access"
+            permissions:
+              - "Overall/Read"
+              - "Job/Read"
+              - "View/Read"
+            entries:
+              - group: "viewers"
+
+  # ── Global Properties ────────────────────────────────────────────────────────
+  globalNodeProperties:
+    - envVars:
+        env:
+          - key:   "NEXUS_REGISTRY"
+            value: "localhost:80"
+          - key:   "NEXUS_REPO"
+            value: "repository/docker-hosted"
+          - key:   "DOCKER_BUILDKIT"
+            value: "1"
+          - key:   "TZ"
+            value: "UTC"
+
+  # ── Agents ───────────────────────────────────────────────────────────────────
+  # Label includes 'docker' to match: agent { label 'docker' } in both Jenkinsfiles
+  nodes:
+    - permanent:
+        name:           "docker-agent-01"
+        labelString:    "docker docker-agent linux"
+        remoteFS:       "/home/jenkins/agent"
+        numExecutors:   4
+        mode:           EXCLUSIVE
+        retentionStrategy:
+          demand:
+            idleDelay:     15
+            inDemandDelay: 0
+        nodeProperties:
+          - envVars:
+              env:
+                - key:   "DOCKER_HOST"
+                  value: "unix:///var/run/docker.sock"
+
+# =============================================================================
+# Credentials Store
+# =============================================================================
+credentials:
+  system:
+    domainCredentials:
+      - credentials:
+
+          # ── Nexus Docker Registry — vmc-console pipeline ─────────────────────
+          - usernamePassword:
+              id:          "nexus-docker-credentials"
+              description: "Nexus Docker Registry — vmc-console push"
+              scope:       GLOBAL
+              username:    "${NEXUS_USERNAME}"
+              password:    "${NEXUS_PASSWORD}"
+
+          # ── Nexus Docker Registry — banking-nodejs-app pipeline ──────────────
+          - usernamePassword:
+              id:          "nexus-credentials"
+              description: "Nexus Docker Registry — banking-nodejs-app push"
+              scope:       GLOBAL
+              username:    "${NEXUS_USERNAME}"
+              password:    "${NEXUS_PASSWORD}"
+
+          # ── NVD API Key (OWASP Dependency Check) ─────────────────────────────
+          - string:
+              id:          "nvd-api-key"
+              description: "NIST NVD API key — speeds OWASP dependency-check"
+              scope:       GLOBAL
+              secret:      "${NVD_API_KEY}"
+
+          # ── Slack Webhook ────────────────────────────────────────────────────
+          - string:
+              id:          "slack-webhook"
+              description: "Slack incoming webhook URL for pipeline notifications"
+              scope:       GLOBAL
+              secret:      "${SLACK_WEBHOOK_URL}"
+
+          # ── GitHub / SCM token ───────────────────────────────────────────────
+          - usernamePassword:
+              id:          "github-credentials"
+              description: "GitHub access token for SCM checkout"
+              scope:       GLOBAL
+              username:    "${GITHUB_USERNAME}"
+              password:    "${GITHUB_TOKEN}"
+
+# =============================================================================
+# Tool Installations
+# =============================================================================
+tool:
+  git:
+    installations:
+      - name: "Default"
+        home: "git"
+
+# =============================================================================
+# Unclassified / Plugin Settings
+# =============================================================================
+unclassified:
+  location:
+    url:             "https://localhost:8443/"
+    adminAddress:    "devops@vmc-corp.com"
+
+  globalLibraries:
+    libraries: []
+
+  timestamperConfig:
+    allPipelines: true
+
+  ansiColorBuildWrapper:
+    globalColorMapName: "xterm"
+
+  buildDiscarders:
+    configuredBuildDiscarders:
+      - "jobBuildDiscarder"
+
+  auditTrailPlugin:
+    logBuildCause:     true
+    pattern:           ".*"
+
+# =============================================================================
+# Jobs DSL — Seed both pipeline jobs automatically
+# =============================================================================
+jobs:
+
+  # ---------------------------------------------------------------------------
+  # Job 1: VMC Console CI/CD
+  # Repo  : https://github.com/yasir27uk/vmc-aws-console.git
+  # File  : Jenkinsfile  (root of that repo)
+  # ---------------------------------------------------------------------------
+  - script: |
+      pipelineJob('vmc-console-cicd') {
+        description('VMC Console — Enterprise CI/CD Pipeline\nManaged by JCasC — do not edit manually.')
+        displayName('VMC Console — CI/CD Pipeline')
+
+        logRotator {
+          numToKeep(10)
+          artifactNumToKeep(5)
+        }
+
+        triggers {
+          scm('H/5 * * * *')
+        }
+
+        definition {
+          cpsScm {
+            scm {
+              git {
+                remote {
+                  url('https://github.com/yasir27uk/vmc-aws-console.git')
+                  credentials('github-credentials')
+                }
+                branch('*/main')
+                extensions {
+                  cloneOption {
+                    shallow(true)
+                    depth(5)
+                    timeout(10)
+                  }
+                  wipeWorkspace()
+                }
+              }
+            }
+            scriptPath('Jenkinsfile')
+            lightweight(true)
+          }
+        }
+
+        parameters {
+          // Environment
+          choiceParam('BUILD_ENV', ['dev', 'staging', 'production'],
+            'Target deployment environment')
+          stringParam('IMAGE_TAG', 'latest',
+            'Custom image tag. Leave blank for auto-tag: <branch>-<build#>')
+
+          // Security scan toggles
+          booleanParam('SKIP_GITLEAKS',   false, 'Skip Gitleaks secret detection scan')
+          booleanParam('SKIP_SAST',       false, 'Skip Semgrep SAST scan')
+          booleanParam('SKIP_OWASP',      false, 'Skip OWASP Dependency Check')
+          booleanParam('SKIP_TRIVY',      false, 'Skip Trivy container vulnerability scan')
+          choiceParam('TRIVY_SEVERITY', ['HIGH,CRITICAL', 'MEDIUM,HIGH,CRITICAL', 'CRITICAL'],
+            'Minimum CVE severity that triggers a quality gate failure')
+
+          // Push / deploy control
+          booleanParam('PUSH_TO_NEXUS',      true,  'Push built image to Nexus registry after Quality Gate passes')
+          booleanParam('DRY_RUN',            false, 'Build + scan only — skip push and smoke test')
+          booleanParam('REQUIRE_APPROVAL',   false, 'Pause for manual approval before pushing (always on for production)')
+          booleanParam('FORCE_PUSH_LATEST',  true,  'Force push :latest tag even when not on main/master branch')
+
+          // Post-deploy & workspace
+          booleanParam('RUN_SMOKE_TEST',   true,  'Run container health-check + HTTP/security-header assertions')
+          booleanParam('CLEAN_WORKSPACE',  true,  'Clean workspace at start')
+          stringParam('NOTIFY_EMAIL', '', 'Send build result email to this address (blank = disabled)')
+        }
+      }
+
+  # ---------------------------------------------------------------------------
+  # Job 2: Banking Node.js App CI/CD
+  # Repo  : https://github.com/yasir27uk/banking-nodejs-app.git
+  # File  : Jenkinsfile  (root of that repo)
+  # ---------------------------------------------------------------------------
+  - script: |
+      pipelineJob('banking-nodejs-app-cicd') {
+        description('Banking Node.js App — Enterprise CI/CD Pipeline\nManaged by JCasC — do not edit manually.')
+        displayName('Banking Node.js App — CI/CD Pipeline')
+
+        logRotator {
+          numToKeep(20)
+          artifactNumToKeep(10)
+        }
+
+        triggers {
+          scm('H/5 * * * *')
+        }
+
+        definition {
+          cpsScm {
+            scm {
+              git {
+                remote {
+                  url('https://github.com/yasir27uk/banking-nodejs-app.git')
+                  credentials('github-credentials')
+                }
+                branch('*/main')
+                extensions {
+                  cloneOption {
+                    shallow(true)
+                    depth(5)
+                    timeout(10)
+                  }
+                  wipeWorkspace()
+                }
+              }
+            }
+            scriptPath('Jenkinsfile')
+            lightweight(true)
+          }
+        }
+
+        parameters {
+          // Environment
+          choiceParam('DEPLOY_ENV', ['dev', 'staging', 'production'],
+            'Target deployment environment')
+          stringParam('IMAGE_TAG_OVERRIDE', 'latest',
+            'Override image tag (leave empty for auto: build#-commit-timestamp)')
+
+          // Scan / stage toggles
+          booleanParam('SKIP_DAST',      true,  'Skip DAST / ZAP scan')
+          booleanParam('SKIP_FOSSA',     true,  'Skip FOSSA licence-compliance scan')
+          booleanParam('SKIP_K8S_DEPLOY',true,  'Skip Kubernetes deployment stages')
+
+          // Push / deploy control
+          booleanParam('PUSH_TO_NEXUS',  true,  'Push built image to local Nexus registry')
+          booleanParam('FORCE_DEPLOY',   false, 'Force deploy even with non-critical scan findings')
+
+          // Notifications
+          stringParam('NOTIFY_EMAIL', '', 'Send build result to this email (blank = disabled)')
+        }
+      }

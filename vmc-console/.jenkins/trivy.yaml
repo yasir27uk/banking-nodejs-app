@@ -1,0 +1,42 @@
+# =============================================================================
+# Trivy — Container & Filesystem Scan Configuration
+# VMC Console — Enterprise Security Pipeline
+# =============================================================================
+
+image:
+  # Scan both OS packages and application libraries
+  scanners:
+    - vuln
+    - secret
+    - misconfig
+
+  # Vulnerability databases
+  db:
+    skip-update: false       # Always fetch latest CVE DB
+
+  # Scan all layers (not just final)
+  include-non-failures: false
+
+vulnerability:
+  # Ignore vulnerabilities with no available fix
+  ignore-unfixed: false
+  # Report types to include
+  type:
+    - os
+    - library
+
+secret:
+  config: /config/trivy-secret.yaml
+
+misconfiguration:
+  exit-code: 0              # Misconfig findings are advisory only
+
+# Output
+format: json
+
+# Policies
+ignorefile: /config/.trivyignore
+
+# Performance
+timeout: 10m
+cache-dir: /tmp/trivy-cache

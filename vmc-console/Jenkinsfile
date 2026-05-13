@@ -1,0 +1,841 @@
+#!/usr/bin/env groovy
+// =============================================================================
+// VMC Console — Enterprise CI/CD Pipeline  (Parameterised Edition)
+// Jenkins: https://localhost:8443/
+// =============================================================================
+//
+// ┌──────────────────────────────────────────────────────────────────────────┐
+// │  Stage 1  Initialise      metadata, workspace clean, policy checks      │
+// │  Stage 2  Install         npm ci (runs in Nexus nodejs-base container)  │
+// │  Stage 3  Pre-flight  ══╗ Lint & TypeScript  ║  npm audit  [PARALLEL]  │
+// │  Stage 4  Security    ══╣ Gitleaks            ║  Semgrep    [PARALLEL]  │
+// │  Stage 5  OWASP           Dependency-Check CVE scan                     │
+// │  Stage 6  Docker Build    BuildKit multi-stage, OCI labels              │
+// │  Stage 7  Trivy Scan      SBOM (CycloneDX) + vulnerability report       │
+// │  Stage 8  Quality Gate    evaluate all scan results  fail/warn/pass     │
+// │  Stage 9  Approval ❓     manual gate (production or REQUIRE_APPROVAL)  │
+// │  Stage 10 Push to Nexus   version tag + branch-latest + latest          │
+// │  Stage 11 Smoke Test      health-check + HTTP/header assertions         │
+// │  Post     Archive, notify, workspace cleanup                            │
+// └──────────────────────────────────────────────────────────────────────────┘
+//
+// ┌─ Jenkins Credentials (configured by JCasC) ─────────────────────────────┐
+// │  nexus-docker-credentials  Username/Password  — Docker registry push    │
+// │  nvd-api-key               Secret Text        — OWASP NVD API (speeds)  │
+// │  slack-webhook             Secret Text        — Slack notifications      │
+// └─────────────────────────────────────────────────────────────────────────┘
+//
+// ┌─ Agent Requirements ─────────────────────────────────────────────────────┐
+// │  Labels : docker  (jenkins-agent-1 / jenkins-agent-2)                  │
+// │  Needs  : Docker CLI + socket /var/run/docker.sock  (custom agent img)  │
+// └─────────────────────────────────────────────────────────────────────────┘
+// =============================================================================
+
+pipeline {
+
+    // ── Agent: matches 'docker' label on both jenkins-agent-1 and jenkins-agent-2
+    agent { label 'docker' }
+
+    // ─── Pipeline-level Options ───────────────────────────────────────────────
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '10', artifactNumToKeepStr: '5'))
+        timeout(time: 60, unit: 'MINUTES')
+        timestamps()
+        disableConcurrentBuilds(abortPrevious: true)
+        ansiColor('xterm')
+        skipDefaultCheckout(false)
+        // Faster pipeline performance
+        durabilityHint('PERFORMANCE_OPTIMIZED')
+    }
+
+    // ─── Build Parameters (14 params) ────────────────────────────────────────
+    parameters {
+
+        // ── Section 1: Environment & Versioning ───────────────────────────────
+        choice(
+            name:        'BUILD_ENV',
+            choices:     ['dev', 'staging', 'production'],
+            description: '''Target deployment environment:
+  dev        → build + scan + push  (warnings only — no gate)
+  staging    → build + scan + push  (quality gate enforced)
+  production → build + scan + approval gate + strict quality gate'''
+        )
+        string(
+            name:         'IMAGE_TAG',
+            defaultValue: 'latest',
+            description:  'Custom image tag. Leave blank for auto-tag: &lt;branch&gt;-&lt;build#&gt;'
+        )
+
+        // ── Section 2: Security Scan Toggles ─────────────────────────────────
+        booleanParam(
+            name:         'SKIP_GITLEAKS',
+            defaultValue: false,
+            description:  'Skip Gitleaks secret detection scan'
+        )
+        booleanParam(
+            name:         'SKIP_SAST',
+            defaultValue: false,
+            description:  'Skip Semgrep SAST scan (TypeScript / React / OWASP rules)'
+        )
+        booleanParam(
+            name:         'SKIP_OWASP',
+            defaultValue: false,
+            description:  'Skip OWASP Dependency Check (takes ~5-15 min on first run)'
+        )
+        booleanParam(
+            name:         'SKIP_TRIVY',
+            defaultValue: false,
+            description:  'Skip Trivy container vulnerability scan'
+        )
+        choice(
+            name:        'TRIVY_SEVERITY',
+            choices:     ['HIGH,CRITICAL', 'MEDIUM,HIGH,CRITICAL', 'CRITICAL'],
+            description: 'Minimum CVE severity that triggers a quality gate failure'
+        )
+
+        // ── Section 3: Push & Deployment Control ──────────────────────────────
+        booleanParam(
+            name:         'PUSH_TO_NEXUS',
+            defaultValue: true,
+            description:  'Push built image to Nexus registry after Quality Gate passes'
+        )
+        booleanParam(
+            name:         'DRY_RUN',
+            defaultValue: false,
+            description:  'DRY RUN: build + scan only — skip push and smoke test'
+        )
+        booleanParam(
+            name:         'REQUIRE_APPROVAL',
+            defaultValue: false,
+            description:  'Pause for manual approval before pushing to Nexus (always on for production)'
+        )
+        booleanParam(
+            name:         'FORCE_PUSH_LATEST',
+            defaultValue: true,
+            description:  'Force push :latest tag even when not on main/master branch'
+        )
+
+        // ── Section 4: Post-deploy & Workspace ───────────────────────────────
+        booleanParam(
+            name:         'RUN_SMOKE_TEST',
+            defaultValue: true,
+            description:  'Run container health-check + HTTP/security-header assertions'
+        )
+        booleanParam(
+            name:         'CLEAN_WORKSPACE',
+            defaultValue: true,
+            description:  'Clean workspace at start (disable for faster incremental builds)'
+        )
+        string(
+            name:         'NOTIFY_EMAIL',
+            defaultValue: '',
+            description:  'Send build result email to this address (leave blank to disable)'
+        )
+    }
+
+    // ─── Static Environment Variables ────────────────────────────────────────
+    environment {
+        // ── Nexus ─────────────────────────────────────────────────────────────
+        NEXUS_REGISTRY    = 'localhost:80'
+        IMAGE_NAME        = 'vmc-console'
+        FULL_IMAGE        = 'localhost:80/repository/docker-hosted/vmc-console'
+        NODEJS_BASE       = 'node:20-alpine'
+
+        // ── Credentials — NEXUS_DOCKER_CREDS_USR / _PSW auto-injected ─────────
+        NEXUS_DOCKER_CREDS = credentials('nexus-docker-credentials')
+
+        // ── Scan config ───────────────────────────────────────────────────────
+        OWASP_FAIL_SCORE  = '8'    // CVSS ≥ 8 → fail
+
+        // ── Docker BuildKit ───────────────────────────────────────────────────
+        DOCKER_BUILDKIT   = '1'
+        BUILDKIT_PROGRESS = 'plain'
+
+        // ── Paths & ports ─────────────────────────────────────────────────────
+        REPORTS_DIR       = "${WORKSPACE}/reports"
+        SMOKE_PORT        = '18080'
+    }
+
+    // =========================================================================
+    // STAGES
+    // =========================================================================
+    stages {
+
+        // ── 1. INITIALISE ─────────────────────────────────────────────────────
+        stage('Initialise') {
+            steps {
+                script {
+                    // ── Optional workspace clean ──────────────────────────────
+                    if (params.CLEAN_WORKSPACE) {
+                        cleanWs(deleteDirs: true, notFailBuild: true)
+                        checkout scm
+                    }
+
+                    // ── Dynamic metadata ──────────────────────────────────────
+                    def rawBranch        = env.GIT_BRANCH ?: env.BRANCH_NAME ?: 'unknown'
+                    env.SAFE_BRANCH      = rawBranch
+                                              .replaceAll('origin/', '')
+                                              .replaceAll('[^a-zA-Z0-9._-]', '-')
+                                              .toLowerCase()
+                    env.GIT_COMMIT_SHORT = sh(script: 'git rev-parse --short HEAD 2>/dev/null || echo unknown', returnStdout: true).trim()
+                    env.BUILD_DATE       = sh(script: 'date -u +"%Y-%m-%dT%H:%M:%SZ"', returnStdout: true).trim()
+                    env.BUILD_VERSION    = params.IMAGE_TAG?.trim() ?: "${env.SAFE_BRANCH}-${env.BUILD_NUMBER}"
+                    env.SMOKE_CONTAINER  = "vmc-smoke-${env.BUILD_NUMBER}"
+                    env.EFFECTIVE_TRIVY  = params.TRIVY_SEVERITY ?: 'HIGH,CRITICAL'
+
+                    // ── Policy: production must never have all scans skipped ───
+                    if (params.BUILD_ENV == 'production' &&
+                        params.SKIP_GITLEAKS && params.SKIP_SAST &&
+                        params.SKIP_OWASP    && params.SKIP_TRIVY) {
+                        error('POLICY VIOLATION: All security scans are skipped on a production build. Enable at least one scan.')
+                    }
+
+                    // ── Create reports directory ──────────────────────────────
+                    sh "mkdir -p '${env.REPORTS_DIR}'"
+
+                    // ── Print build manifest ──────────────────────────────────
+                    echo """
+╔══════════════════════════════════════════════════════════════════╗
+║         VMC Console — Enterprise CI/CD  (Parameterised)         ║
+╠══════════════════════════════════════════════════════════════════╣
+║  Job         : ${env.JOB_NAME}
+║  Build       : #${env.BUILD_NUMBER}
+║  Agent       : ${env.NODE_NAME}
+║  Branch      : ${env.SAFE_BRANCH}
+║  Commit      : ${env.GIT_COMMIT_SHORT}
+║  Version     : ${env.BUILD_VERSION}
+║  Environment : ${params.BUILD_ENV}
+║  Date        : ${env.BUILD_DATE}
+╠══════════════════════════════════════════════════════════════════╣
+║  Scans       : Gitleaks=${!params.SKIP_GITLEAKS} │ SAST=${!params.SKIP_SAST} │ OWASP=${!params.SKIP_OWASP} │ Trivy=${!params.SKIP_TRIVY}
+║  Push        : ${params.PUSH_TO_NEXUS} │ DryRun=${params.DRY_RUN} │ Approval=${params.REQUIRE_APPROVAL || params.BUILD_ENV == 'production'}
+║  SmokeTest   : ${params.RUN_SMOKE_TEST && !params.DRY_RUN}
+╚══════════════════════════════════════════════════════════════════╝"""
+                }
+            }
+        }
+
+        // ── 2. INSTALL DEPENDENCIES ───────────────────────────────────────────
+        stage('Install Dependencies') {
+            steps {
+                sh """
+                    echo "Installing dependencies using ${NODEJS_BASE}..."
+                    docker run --rm \\
+                        --volumes-from $(hostname) \\
+                        -w "${WORKSPACE}" \\
+                        -e HOME=/tmp \\
+                        -e NODE_OPTIONS='--max-old-space-size=2048' \\
+                        '${NODEJS_BASE}' \\
+                        sh -c 'npm ci --include=dev --ignore-scripts && npm rebuild'
+                """
+            }
+        }
+
+        // ── 3. PRE-FLIGHT CHECKS (parallel) ──────────────────────────────────
+        stage('Pre-flight Checks') {
+            parallel {
+
+                stage('Lint & TypeScript') {
+                    steps {
+                        sh """
+                            docker run --rm \\
+                                --volumes-from $(hostname) \\
+                                -w "${WORKSPACE}" \\
+                                -e HOME=/tmp \\
+                                '${NODEJS_BASE}' \\
+                                sh -c "npx tsc --noEmit 2>&1 | tee '${REPORTS_DIR}/tsc-output.txt' && npm run lint 2>&1 | tee '${REPORTS_DIR}/eslint-output.txt'"
+                        """
+                    }
+                    post {
+                        always {
+                            archiveArtifacts artifacts: 'reports/tsc-output.txt,reports/eslint-output.txt',
+                                             allowEmptyArchive: true
+                        }
+                    }
+                }
+
+                stage('NPM Dependency Audit') {
+                    steps {
+                        sh """
+                            docker run --rm \\
+                                --volumes-from $(hostname) \\
+                                -w "${WORKSPACE}" \\
+                                -e HOME=/tmp \\
+                                '${NODEJS_BASE}' \\
+                                sh -c "npm audit --audit-level=moderate --json > '${REPORTS_DIR}/npm-audit.json' 2>&1; exit 0"
+                        """
+                        script {
+                            if (fileExists("${REPORTS_DIR}/npm-audit.json")) {
+                                try {
+                                    def audit    = readJSON file: "${REPORTS_DIR}/npm-audit.json"
+                                    def vulns    = audit?.metadata?.vulnerabilities ?: [:]
+                                    def critical = vulns?.critical ?: 0
+                                    def high     = vulns?.high     ?: 0
+                                    def moderate = vulns?.moderate ?: 0
+                                    echo "NPM Audit — Critical: ${critical}, High: ${high}, Moderate: ${moderate}"
+                                    if (critical > 0) {
+                                        unstable("npm audit: ${critical} critical vulnerabilities found")
+                                    }
+                                } catch (e) {
+                                    echo "WARN: Could not parse npm-audit.json — ${e.message}"
+                                }
+                            }
+                        }
+                    }
+                    post {
+                        always {
+                            archiveArtifacts artifacts: 'reports/npm-audit.json',
+                                             allowEmptyArchive: true
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── 4. SECURITY SCANNING (parallel) ──────────────────────────────────
+        stage('Security Scanning') {
+            parallel {
+
+                // ── 4a. Secret Detection ───────────────────────────────────────
+                stage('Secret Detection (Gitleaks)') {
+                    when { expression { !params.SKIP_GITLEAKS } }
+                    steps {
+                        sh """
+                            docker run --rm \\
+                                --volumes-from $(hostname) \\
+                                zricethezav/gitleaks:latest \\
+                                detect \\
+                                --source="${WORKSPACE}" \\
+                                --config="${WORKSPACE}/.jenkins/gitleaks.toml" \\
+                                --report-format=sarif \\
+                                --report-path="${REPORTS_DIR}/gitleaks.sarif" \\
+                                --redact \\
+                                --no-git \\
+                                --verbose \\
+                                2>&1 | tee '${REPORTS_DIR}/gitleaks-stdout.txt' || true
+                        """
+                        script {
+                            if (fileExists("${REPORTS_DIR}/gitleaks.sarif")) {
+                                def sarif = readJSON file: "${REPORTS_DIR}/gitleaks.sarif"
+                                def leaks = sarif?.runs?.collectMany { it?.results ?: [] }?.size() ?: 0
+                                if (leaks > 0) {
+                                    unstable("Gitleaks: ${leaks} potential secret(s) detected — review reports/gitleaks.sarif")
+                                } else {
+                                    echo "Gitleaks: No secrets detected ✓"
+                                }
+                            }
+                        }
+                    }
+                    post {
+                        always {
+                            archiveArtifacts artifacts: 'reports/gitleaks.sarif,reports/gitleaks-stdout.txt',
+                                             allowEmptyArchive: true
+                        }
+                    }
+                }
+
+                // ── 4b. SAST ───────────────────────────────────────────────────
+                stage('SAST (Semgrep)') {
+                    when { expression { !params.SKIP_SAST } }
+                    steps {
+                        sh """
+                            docker run --rm \\
+                                --volumes-from $(hostname) \\
+                                -w "${WORKSPACE}" \\
+                                semgrep/semgrep:latest \\
+                                semgrep scan \\
+                                --config p/typescript \\
+                                --config p/react \\
+                                --config p/secrets \\
+                                --config p/owasp-top-ten \\
+                                --json \\
+                                --output "${REPORTS_DIR}/semgrep.json" \\
+                                --timeout 60 \\
+                                --max-memory 1024 \\
+                                2>&1 | tee '${REPORTS_DIR}/semgrep-stdout.txt' || true
+                        """
+                        script {
+                            if (fileExists("${REPORTS_DIR}/semgrep.json")) {
+                                try {
+                                    def semgrep = readJSON file: "${REPORTS_DIR}/semgrep.json"
+                                    def errors  = semgrep?.results?.findAll { it?.extra?.severity == 'ERROR' }?.size() ?: 0
+                                    def warns   = semgrep?.results?.findAll { it?.extra?.severity == 'WARNING' }?.size() ?: 0
+                                    echo "Semgrep — Errors: ${errors}, Warnings: ${warns}"
+                                    if (errors > 0) {
+                                        unstable("Semgrep SAST: ${errors} ERROR-level finding(s)")
+                                    }
+                                } catch (e) {
+                                    echo "WARN: Could not parse semgrep.json — ${e.message}"
+                                }
+                            }
+                        }
+                    }
+                    post {
+                        always {
+                            archiveArtifacts artifacts: 'reports/semgrep.json,reports/semgrep-stdout.txt',
+                                             allowEmptyArchive: true
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── 5. OWASP DEPENDENCY CHECK ─────────────────────────────────────────
+        stage('OWASP Dependency Check') {
+            when { expression { !params.SKIP_OWASP } }
+            steps {
+                sh """
+                    docker run --rm \\
+                        --volumes-from $(hostname) \\
+                        owasp/dependency-check:latest \\
+                        --project 'vmc-console' \\
+                        --scan "${WORKSPACE}" \\
+                        --format XML \\
+                        --format HTML \\
+                        --format JSON \\
+                        --out "${REPORTS_DIR}" \\
+                        --failOnCVSS ${OWASP_FAIL_SCORE} \\
+                        --enableExperimental \\
+                        --exclude '**/.git/**' \\
+                        --exclude '**/node_modules/.cache/**' \\
+                        --suppression "${WORKSPACE}/.jenkins/owasp-suppressions.xml" \\
+                        2>&1 | tee '${REPORTS_DIR}/owasp-stdout.txt' || true
+                """
+            }
+            post {
+                always {
+                    publishHTML(target: [
+                        allowMissing:          true,
+                        alwaysLinkToLastBuild: false,
+                        keepAll:               true,
+                        reportDir:             'reports',
+                        reportFiles:           'dependency-check-report.html',
+                        reportName:            'OWASP Dependency Check'
+                    ])
+                    archiveArtifacts artifacts: 'reports/dependency-check-report.*',
+                                     allowEmptyArchive: true
+                }
+            }
+        }
+
+        // ── 6. DOCKER BUILD ───────────────────────────────────────────────────
+        stage('Docker Build') {
+            steps {
+                sh """
+                    echo "▶ Building Docker image..."
+                    echo "  Image   : ${FULL_IMAGE}:${BUILD_VERSION}"
+                    echo "  Commit  : ${GIT_COMMIT_SHORT}"
+                    echo "  Date    : ${BUILD_DATE}"
+
+                    docker build \\
+                        --build-arg BUILD_VERSION='${BUILD_VERSION}' \\
+                        --build-arg GIT_COMMIT='${GIT_COMMIT_SHORT}' \\
+                        --build-arg BUILD_DATE='${BUILD_DATE}' \\
+                        --label 'env=${params.BUILD_ENV}' \\
+                        --label 'pipeline.job=${JOB_NAME}' \\
+                        --label 'pipeline.build=${BUILD_NUMBER}' \\
+                        --label 'pipeline.url=${BUILD_URL}' \\
+                        --cache-from '${FULL_IMAGE}:cache' \\
+                        --cache-from '${FULL_IMAGE}:latest' \\
+                        -t '${FULL_IMAGE}:${BUILD_VERSION}' \\
+                        -t '${FULL_IMAGE}:${SAFE_BRANCH}-latest' \\
+                        -f Dockerfile \\
+                        . 2>&1
+
+                    echo "▶ Docker build complete:"
+                    docker images '${FULL_IMAGE}'
+                """
+            }
+        }
+
+        // ── 7. CONTAINER SECURITY SCAN (Trivy) ────────────────────────────────
+        stage('Container Scan (Trivy)') {
+            when { expression { !params.SKIP_TRIVY } }
+            steps {
+                // Generate Software Bill of Materials (SBOM) in CycloneDX format
+                sh """
+                    docker run --rm \\
+                        -v /var/run/docker.sock:/var/run/docker.sock \\
+                        --volumes-from $(hostname) \\
+                        aquasec/trivy:latest \\
+                        image \\
+                        --format cyclonedx \\
+                        --output "${REPORTS_DIR}/sbom.cyclonedx.json" \\
+                        --quiet \\
+                        '${FULL_IMAGE}:${BUILD_VERSION}'
+                """
+
+                // Full vulnerability JSON report (non-failing — used by Quality Gate)
+                sh """
+                    docker run --rm \\
+                        -v /var/run/docker.sock:/var/run/docker.sock \\
+                        --volumes-from $(hostname) \\
+                        aquasec/trivy:latest \\
+                        image \\
+                        --config "${WORKSPACE}/.jenkins/trivy.yaml" \\
+                        --severity '${EFFECTIVE_TRIVY}' \\
+                        --format json \\
+                        --output "${REPORTS_DIR}/trivy-vulns.json" \\
+                        --exit-code 0 \\
+                        '${FULL_IMAGE}:${BUILD_VERSION}'
+                """
+
+                // Human-readable table summary to build console
+                sh """
+                    echo "\\n───────── Trivy Vulnerability Summary ─────────"
+                    docker run --rm \\
+                        -v /var/run/docker.sock:/var/run/docker.sock \\
+                        --volumes-from $(hostname) \\
+                        aquasec/trivy:latest \\
+                        image \\
+                        --config "${WORKSPACE}/.jenkins/trivy.yaml" \\
+                        --severity '${EFFECTIVE_TRIVY}' \\
+                        --format table \\
+                        --exit-code 0 \\
+                        '${FULL_IMAGE}:${BUILD_VERSION}'
+                    echo "────────────────────────────────────────────────"
+                """
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'reports/trivy-vulns.json,reports/sbom.cyclonedx.json',
+                                     allowEmptyArchive: true
+                }
+            }
+        }
+
+        // ── 8. QUALITY GATE ───────────────────────────────────────────────────
+        stage('Quality Gate') {
+            steps {
+                script {
+                    def failures  = []
+                    def warnings  = []
+
+                    // ── Trivy ─────────────────────────────────────────────────
+                    if (!params.SKIP_TRIVY && fileExists("${REPORTS_DIR}/trivy-vulns.json")) {
+                        try {
+                            def report  = readJSON file: "${REPORTS_DIR}/trivy-vulns.json"
+                            def critical = 0
+                            def high     = 0
+                            report?.Results?.each { r ->
+                                r?.Vulnerabilities?.each { v ->
+                                    if (v?.Severity == 'CRITICAL') critical++
+                                    if (v?.Severity == 'HIGH')     high++
+                                }
+                            }
+                            echo "Trivy Gate — CRITICAL: ${critical}, HIGH: ${high}"
+                            if (critical > 0) failures << "Trivy: ${critical} CRITICAL CVE(s) in container image"
+                            if (high     > 0) warnings << "Trivy: ${high} HIGH CVE(s) in container image"
+                        } catch (e) {
+                            warnings << "Trivy: could not parse report — ${e.message}"
+                        }
+                    }
+
+                    // ── npm audit ─────────────────────────────────────────────
+                    if (fileExists("${REPORTS_DIR}/npm-audit.json")) {
+                        try {
+                            def audit    = readJSON file: "${REPORTS_DIR}/npm-audit.json"
+                            def critical = audit?.metadata?.vulnerabilities?.critical ?: 0
+                            def high     = audit?.metadata?.vulnerabilities?.high     ?: 0
+                            if (critical > 0) failures << "npm audit: ${critical} CRITICAL dependency CVE(s)"
+                            if (high     > 0) warnings << "npm audit: ${high} HIGH dependency CVE(s)"
+                        } catch (e) {
+                            warnings << "npm audit: could not parse report — ${e.message}"
+                        }
+                    }
+
+                    // ── Gitleaks ──────────────────────────────────────────────
+                    if (!params.SKIP_GITLEAKS && fileExists("${REPORTS_DIR}/gitleaks.sarif")) {
+                        try {
+                            def sarif = readJSON file: "${REPORTS_DIR}/gitleaks.sarif"
+                            def leaks = sarif?.runs?.collectMany { it?.results ?: [] }?.size() ?: 0
+                            if (leaks > 0) failures << "Gitleaks: ${leaks} secret(s) detected in source"
+                        } catch (e) { /* non-blocking */ }
+                    }
+
+                    // ── Semgrep ───────────────────────────────────────────────
+                    if (!params.SKIP_SAST && fileExists("${REPORTS_DIR}/semgrep.json")) {
+                        try {
+                            def sg     = readJSON file: "${REPORTS_DIR}/semgrep.json"
+                            def errors = sg?.results?.findAll { it?.extra?.severity == 'ERROR' }?.size() ?: 0
+                            if (errors > 0) warnings << "Semgrep: ${errors} SAST ERROR finding(s)"
+                        } catch (e) { /* non-blocking */ }
+                    }
+
+                    // ── Verdict ───────────────────────────────────────────────
+                    if (warnings.size() > 0) {
+                        echo "Quality Gate WARNINGS:\n  ${warnings.join('\n  ')}"
+                    }
+
+                    if (failures.size() > 0) {
+                        def msg = "Quality Gate FAILED:\n  ${failures.join('\n  ')}"
+                        if (params.BUILD_ENV == 'production' || params.BUILD_ENV == 'staging') {
+                            error(msg)
+                        } else {
+                            unstable(msg)
+                        }
+                    } else {
+                        echo "✅ Quality Gate PASSED — ${failures.size()} failures, ${warnings.size()} warnings"
+                    }
+                }
+            }
+        }
+
+        // ── 9. APPROVAL GATE ─────────────────────────────────────────────────
+        stage('Approval Gate') {
+            when {
+                expression { params.REQUIRE_APPROVAL || params.BUILD_ENV == 'production' }
+            }
+            steps {
+                script {
+                    def approver = input(
+                        id:          'deploy-approval',
+                        message:     "Deploy ${env.BUILD_VERSION} to Nexus (${params.BUILD_ENV})?",
+                        ok:          'Approve & Deploy',
+                        submitterParameter: 'APPROVED_BY',
+                        parameters: [
+                            string(name: 'APPROVED_BY', defaultValue: '', description: 'Your name (for audit trail)')
+                        ]
+                    )
+                    echo "Approved by: ${approver ?: 'unknown'}"
+                    currentBuild.description = "Approved by ${approver ?: 'unknown'}"
+                }
+            }
+        }
+
+        // ── 10. PUSH TO NEXUS ─────────────────────────────────────────────────
+        stage('Push to Nexus') {
+            when { expression { params.PUSH_TO_NEXUS && !params.DRY_RUN } }
+            steps {
+                withCredentials([usernamePassword(
+                        credentialsId: 'nexus-docker-credentials',
+                        usernameVariable: 'NEXUS_USR',
+                        passwordVariable: 'NEXUS_PSW')]) {
+                    sh """
+                        echo "▶ Logging into Nexus registry ${NEXUS_REGISTRY}..."
+                        echo "\${NEXUS_PSW}" | docker login '${NEXUS_REGISTRY}' -u "\${NEXUS_USR}" --password-stdin
+
+                        echo "▶ Pushing versioned tag: ${FULL_IMAGE}:${BUILD_VERSION}"
+                        docker push '${FULL_IMAGE}:${BUILD_VERSION}'
+
+                        echo "▶ Pushing branch-latest: ${FULL_IMAGE}:${SAFE_BRANCH}-latest"
+                        docker push '${FULL_IMAGE}:${SAFE_BRANCH}-latest'
+
+                        # Push 'latest' from main/master or when FORCE_PUSH_LATEST is set
+                        if [ '${SAFE_BRANCH}' = 'main' ] || [ '${SAFE_BRANCH}' = 'master' ] || [ '${params.FORCE_PUSH_LATEST}' = 'true' ]; then
+                            echo "▶ Tagging and pushing :latest..."
+                            docker tag '${FULL_IMAGE}:${BUILD_VERSION}' '${FULL_IMAGE}:latest'
+                            docker push '${FULL_IMAGE}:latest'
+                        fi
+
+                        echo "✅ Push complete:"
+                        echo "   ${FULL_IMAGE}:${BUILD_VERSION}"
+                        echo "   ${FULL_IMAGE}:${SAFE_BRANCH}-latest"
+                    """
+                }
+            }
+            post {
+                always {
+                    sh "docker logout '${NEXUS_REGISTRY}' 2>/dev/null || true"
+                }
+            }
+        }
+
+        // ── 11. SMOKE TEST / HEALTH CHECK ────────────────────────────────────
+        stage('Smoke Test') {
+            when { expression { params.RUN_SMOKE_TEST && !params.DRY_RUN } }
+            steps {
+                script {
+                    // ── Start container ───────────────────────────────────────
+                    sh """
+                        echo "▶ Starting smoke-test container on port ${SMOKE_PORT}..."
+                        docker run -d \\
+                            --name '${SMOKE_CONTAINER}' \\
+                            -p '${SMOKE_PORT}:8080' \\
+                            --read-only \\
+                            --tmpfs /tmp:mode=1777 \\
+                            --tmpfs /var/cache/nginx:uid=101 \\
+                            --tmpfs /var/run:uid=101 \\
+                            --health-cmd 'wget -qO /dev/null http://localhost:8080/index.html || exit 1' \\
+                            --health-interval 5s \\
+                            --health-timeout 3s \\
+                            --health-retries 6 \\
+                            --health-start-period 10s \\
+                            '${FULL_IMAGE}:${BUILD_VERSION}'
+                    """
+
+                    // ── Wait for healthy status ───────────────────────────────
+                    timeout(time: 90, unit: 'SECONDS') {
+                        waitUntil(initialRecurrencePeriod: 3000) {
+                            def status = sh(
+                                script: "docker inspect --format='{{.State.Health.Status}}' '${SMOKE_CONTAINER}' 2>/dev/null || echo starting",
+                                returnStdout: true
+                            ).trim()
+                            echo "Container health: ${status}"
+                            if (status == 'unhealthy') {
+                                error('Container entered unhealthy state')
+                            }
+                            return status == 'healthy'
+                        }
+                    }
+
+                    // ── HTTP assertions ───────────────────────────────────────
+                    sh """
+                        BASE="http://localhost:${SMOKE_PORT}"
+
+                        echo "\\n────── Smoke Tests ──────────────────────────────"
+
+                        # 1. index.html returns 200
+                        STATUS=\$(curl -so /dev/null -w '%{http_code}' "\${BASE}/index.html")
+                        [ "\${STATUS}" = "200" ] && echo "✓ [200] GET /index.html" \\
+                            || { echo "✗ [FAIL] GET /index.html → HTTP \${STATUS}"; exit 1; }
+
+                        # 2. Health endpoint returns 200
+                        STATUS=\$(curl -so /dev/null -w '%{http_code}' "\${BASE}/health")
+                        [ "\${STATUS}" = "200" ] && echo "✓ [200] GET /health" \\
+                            || echo "⚠ GET /health → HTTP \${STATUS} (nginx may not expose /health directly)"
+
+                        # 3. Non-existent path returns 200 (SPA fallback)
+                        STATUS=\$(curl -so /dev/null -w '%{http_code}' "\${BASE}/some/deep/route")
+                        [ "\${STATUS}" = "200" ] && echo "✓ [200] SPA fallback route" \\
+                            || echo "⚠ SPA fallback → HTTP \${STATUS}"
+
+                        # 4. Security headers
+                        HEADERS=\$(curl -sI "\${BASE}/index.html")
+
+                        echo "\${HEADERS}" | grep -qi 'x-content-type-options'   \\
+                            && echo "✓ Header: X-Content-Type-Options present"   \\
+                            || echo "✗ Header: X-Content-Type-Options MISSING"
+
+                        echo "\${HEADERS}" | grep -qi 'x-frame-options'          \\
+                            && echo "✓ Header: X-Frame-Options present"          \\
+                            || echo "✗ Header: X-Frame-Options MISSING"
+
+                        echo "\${HEADERS}" | grep -qi 'content-security-policy'  \\
+                            && echo "✓ Header: Content-Security-Policy present"  \\
+                            || echo "✗ Header: Content-Security-Policy MISSING"
+
+                        echo "\${HEADERS}" | grep -qi 'strict-transport-security' \\
+                            && echo "✓ Header: HSTS present"                     \\
+                            || echo "⚠ Header: HSTS not set (expected behind TLS terminator)"
+
+                        # 5. No Server version leak
+                        echo "\${HEADERS}" | grep -qi 'server: nginx/[0-9]'      \\
+                            && echo "⚠ Server version exposed in header"         \\
+                            || echo "✓ Server version not exposed"
+
+                        echo "────────────────────────────────────────────────"
+                        echo "Smoke tests complete"
+                    """
+
+                    // ── Record container logs ─────────────────────────────────
+                    sh "docker logs '${SMOKE_CONTAINER}' > '${REPORTS_DIR}/smoke-container.log' 2>&1 || true"
+                }
+            }
+            post {
+                always {
+                    sh """
+                        docker stop '${SMOKE_CONTAINER}' 2>/dev/null || true
+                        docker rm   '${SMOKE_CONTAINER}' 2>/dev/null || true
+                    """
+                    archiveArtifacts artifacts: 'reports/smoke-container.log',
+                                     allowEmptyArchive: true
+                }
+            }
+        }
+    }
+
+    // =========================================================================
+    // POST PIPELINE
+    // =========================================================================
+    post {
+
+        always {
+            script {
+                echo "▶ Archiving all pipeline reports..."
+            }
+            archiveArtifacts artifacts: 'reports/**/*', allowEmptyArchive: true
+
+            // Remove local images to reclaim disk space
+            sh """
+                docker rmi '${FULL_IMAGE}:${BUILD_VERSION}'       2>/dev/null || true
+                docker rmi '${FULL_IMAGE}:${SAFE_BRANCH}-latest'  2>/dev/null || true
+                docker rmi '${FULL_IMAGE}:latest'                 2>/dev/null || true
+                docker image prune -f                              2>/dev/null || true
+            """
+
+            // Clean workspace but preserve reports
+            cleanWs(
+                patterns:     [[pattern: 'reports/**', type: 'EXCLUDE']],
+                deleteDirs:   true,
+                notFailBuild: true
+            )
+        }
+
+        success {
+            script {
+                def msg = """
+✅ *BUILD SUCCEEDED* — ${env.JOB_NAME} #${env.BUILD_NUMBER}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Branch    : ${env.SAFE_BRANCH ?: 'n/a'}
+Commit    : ${env.GIT_COMMIT_SHORT ?: 'n/a'}
+Version   : ${env.BUILD_VERSION ?: 'n/a'}
+Env       : ${params.BUILD_ENV}
+Image     : ${FULL_IMAGE}:${env.BUILD_VERSION ?: 'n/a'}
+Duration  : ${currentBuild.durationString}
+Build URL : ${env.BUILD_URL}
+""".stripIndent()
+                echo msg
+
+                if (params.NOTIFY_EMAIL?.trim()) {
+                    emailext(subject: "✅ Passed: ${env.JOB_NAME} #${env.BUILD_NUMBER}", body: msg, to: params.NOTIFY_EMAIL)
+                }
+                // slackSend(channel: '#cicd', color: 'good', message: msg)
+            }
+        }
+
+        failure {
+            script {
+                def msg = """
+❌ *BUILD FAILED* — ${env.JOB_NAME} #${env.BUILD_NUMBER}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Branch    : ${env.SAFE_BRANCH ?: 'n/a'}
+Commit    : ${env.GIT_COMMIT_SHORT ?: 'n/a'}
+Env       : ${params.BUILD_ENV}
+Reason    : Check console output and archived reports
+Duration  : ${currentBuild.durationString}
+Build URL : ${env.BUILD_URL}
+""".stripIndent()
+                echo msg
+                if (params.NOTIFY_EMAIL?.trim()) {
+                    emailext(subject: "❌ FAILED: ${env.JOB_NAME} #${env.BUILD_NUMBER}", body: msg, to: params.NOTIFY_EMAIL)
+                }
+                // slackSend(channel: '#cicd', color: 'danger', message: msg)
+            }
+        }
+
+        unstable {
+            script {
+                def msg = """
+⚠️ BUILD UNSTABLE — ${env.JOB_NAME} #${env.BUILD_NUMBER}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Branch    : ${env.SAFE_BRANCH ?: 'n/a'}
+Commit    : ${env.GIT_COMMIT_SHORT ?: 'n/a'}
+Env       : ${params.BUILD_ENV}
+Reason    : Security warnings — review archived scan reports
+Duration  : ${currentBuild.durationString}
+Build URL : ${env.BUILD_URL}
+""".stripIndent()
+                echo msg
+                if (params.NOTIFY_EMAIL?.trim()) {
+                    emailext(subject: "⚠️ Unstable: ${env.JOB_NAME} #${env.BUILD_NUMBER}", body: msg, to: params.NOTIFY_EMAIL)
+                }
+                // slackSend(channel: '#cicd', color: 'warning', message: msg)
+            }
+        }
+
+        aborted {
+            echo "⏹ Build #${env.BUILD_NUMBER} was aborted (timeout or manual cancel)"
+        }
+    }
+}
