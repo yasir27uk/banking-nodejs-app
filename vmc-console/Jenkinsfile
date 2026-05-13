@@ -152,6 +152,7 @@ pipeline {
         BUILDKIT_PROGRESS = 'plain'
 
         // ── Paths & ports ─────────────────────────────────────────────────────
+        APP_DIR           = "${WORKSPACE}/vmc-console"
         REPORTS_DIR       = "${WORKSPACE}/reports"
         SMOKE_PORT        = '18080'
     }
@@ -222,7 +223,7 @@ pipeline {
                     echo "Installing dependencies using ${NODEJS_BASE}..."
                     docker run --rm \\
                         --volumes-from \$(hostname) \\
-                        -w "${WORKSPACE}" \\
+                        -w "${APP_DIR}" \\
                         -e HOME=/tmp \\
                         -e NODE_OPTIONS='--max-old-space-size=2048' \\
                         '${NODEJS_BASE}' \\
@@ -240,7 +241,7 @@ pipeline {
                         sh """
                             docker run --rm \\
                                 --volumes-from \$(hostname) \\
-                                -w "${WORKSPACE}" \\
+                                -w "${APP_DIR}" \\
                                 -e HOME=/tmp \\
                                 '${NODEJS_BASE}' \\
                                 sh -c "npx tsc --noEmit 2>&1 | tee '${REPORTS_DIR}/tsc-output.txt' && npm run lint 2>&1 | tee '${REPORTS_DIR}/eslint-output.txt'"
@@ -259,7 +260,7 @@ pipeline {
                         sh """
                             docker run --rm \\
                                 --volumes-from \$(hostname) \\
-                                -w "${WORKSPACE}" \\
+                                -w "${APP_DIR}" \\
                                 -e HOME=/tmp \\
                                 '${NODEJS_BASE}' \\
                                 sh -c "npm audit --audit-level=moderate --json > '${REPORTS_DIR}/npm-audit.json' 2>&1; exit 0"
@@ -305,8 +306,8 @@ pipeline {
                                 --volumes-from \$(hostname) \\
                                 zricethezav/gitleaks:latest \\
                                 detect \\
-                                --source="${WORKSPACE}" \\
-                                --config="${WORKSPACE}/.jenkins/gitleaks.toml" \\
+                                --source="${APP_DIR}" \\
+                                --config="${APP_DIR}/.jenkins/gitleaks.toml" \\
                                 --report-format=sarif \\
                                 --report-path="${REPORTS_DIR}/gitleaks.sarif" \\
                                 --redact \\
@@ -341,7 +342,7 @@ pipeline {
                         sh """
                             docker run --rm \\
                                 --volumes-from \$(hostname) \\
-                                -w "${WORKSPACE}" \\
+                                -w "${APP_DIR}" \\
                                 semgrep/semgrep:latest \\
                                 semgrep scan \\
                                 --config p/typescript \\
@@ -389,7 +390,7 @@ pipeline {
                         --volumes-from \$(hostname) \\
                         owasp/dependency-check:latest \\
                         --project 'vmc-console' \\
-                        --scan "${WORKSPACE}" \\
+                        --scan "${APP_DIR}" \\
                         --format XML \\
                         --format HTML \\
                         --format JSON \\
@@ -398,7 +399,7 @@ pipeline {
                         --enableExperimental \\
                         --exclude '**/.git/**' \\
                         --exclude '**/node_modules/.cache/**' \\
-                        --suppression "${WORKSPACE}/.jenkins/owasp-suppressions.xml" \\
+                        --suppression "${APP_DIR}/.jenkins/owasp-suppressions.xml" \\
                         2>&1 | tee '${REPORTS_DIR}/owasp-stdout.txt' || true
                 """
             }
@@ -439,8 +440,8 @@ pipeline {
                         --cache-from '${FULL_IMAGE}:latest' \\
                         -t '${FULL_IMAGE}:${BUILD_VERSION}' \\
                         -t '${FULL_IMAGE}:${SAFE_BRANCH}-latest' \\
-                        -f Dockerfile \\
-                        . 2>&1
+                        -f "${APP_DIR}/Dockerfile" \\
+                        "${APP_DIR}" 2>&1
 
                     echo "▶ Docker build complete:"
                     docker images '${FULL_IMAGE}'
@@ -472,7 +473,7 @@ pipeline {
                         --volumes-from \$(hostname) \\
                         aquasec/trivy:latest \\
                         image \\
-                        --config "${WORKSPACE}/.jenkins/trivy.yaml" \\
+                        --config "${APP_DIR}/.jenkins/trivy.yaml" \\
                         --severity '${EFFECTIVE_TRIVY}' \\
                         --format json \\
                         --output "${REPORTS_DIR}/trivy-vulns.json" \\
@@ -488,7 +489,7 @@ pipeline {
                         --volumes-from \$(hostname) \\
                         aquasec/trivy:latest \\
                         image \\
-                        --config "${WORKSPACE}/.jenkins/trivy.yaml" \\
+                        --config "${APP_DIR}/.jenkins/trivy.yaml" \\
                         --severity '${EFFECTIVE_TRIVY}' \\
                         --format table \\
                         --exit-code 0 \\
