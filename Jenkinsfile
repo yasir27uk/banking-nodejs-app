@@ -155,7 +155,14 @@ pipeline {
             steps {
                 sh """
                     if [ ! -x /tmp/node-v20/bin/node ]; then
-                        curl -fsSL "https://nodejs.org/dist/v20.11.1/node-v20.11.1-linux-x64.tar.gz" \
+                        ARCH=$(uname -m)
+                        if [ "\$ARCH" = "aarch64" ] || [ "\$ARCH" = "arm64" ]; then
+                            NODE_ARCH="linux-arm64"
+                        else
+                            NODE_ARCH="linux-x64"
+                        fi
+                        echo "Downloading Node.js for \$NODE_ARCH ..."
+                        curl -fsSL "https://nodejs.org/dist/v20.11.1/node-v20.11.1-\${NODE_ARCH}.tar.gz" \
                             -o /tmp/node.tar.gz
                         mkdir -p /tmp/node-v20
                         tar -xzf /tmp/node.tar.gz -C /tmp/node-v20 --strip-components=1
