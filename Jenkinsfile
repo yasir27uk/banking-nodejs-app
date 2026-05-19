@@ -155,7 +155,7 @@ pipeline {
             steps {
                 sh """
                     if [ ! -x /tmp/node-v20/bin/node ]; then
-                        ARCH=$(uname -m)
+                        ARCH=\$(uname -m)
                         if [ "\$ARCH" = "aarch64" ] || [ "\$ARCH" = "arm64" ]; then
                             NODE_ARCH="linux-arm64"
                         else
