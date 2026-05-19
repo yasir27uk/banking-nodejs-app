@@ -154,13 +154,26 @@ pipeline {
         stage('Setup Node.js') {
             steps {
                 sh """
-                    if [ ! -x /tmp/node-v20/bin/node ]; then
-                        ARCH=\$(uname -m)
-                        if [ "\$ARCH" = "aarch64" ] || [ "\$ARCH" = "arm64" ]; then
-                            NODE_ARCH="linux-arm64"
-                        else
-                            NODE_ARCH="linux-x64"
+                    ARCH=\$(uname -m)
+                    if [ "\$ARCH" = "aarch64" ] || [ "\$ARCH" = "arm64" ]; then
+                        NODE_ARCH="linux-arm64"
+                    else
+                        NODE_ARCH="linux-x64"
+                    fi
+
+                    # Remove cached binary if wrong architecture (agent /tmp persists across builds)
+                    if [ -f /tmp/node-v20/bin/node ]; then
+                        CACHED_ARCH=\$(file /tmp/node-v20/bin/node | grep -o 'x86-64\\|aarch64' || echo 'unknown')
+                        if [ "\$NODE_ARCH" = "linux-arm64" ] && echo "\$CACHED_ARCH" | grep -q 'x86-64'; then
+                            echo "Removing cached x64 Node.js (need arm64)"
+                            rm -rf /tmp/node-v20
+                        elif [ "\$NODE_ARCH" = "linux-x64" ] && echo "\$CACHED_ARCH" | grep -q 'aarch64'; then
+                            echo "Removing cached arm64 Node.js (need x64)"
+                            rm -rf /tmp/node-v20
                         fi
+                    fi
+
+                    if [ ! -x /tmp/node-v20/bin/node ]; then
                         echo "Downloading Node.js for \$NODE_ARCH ..."
                         curl -fsSL "https://nodejs.org/dist/v20.11.1/node-v20.11.1-\${NODE_ARCH}.tar.gz" \
                             -o /tmp/node.tar.gz
