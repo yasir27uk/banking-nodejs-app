@@ -205,14 +205,9 @@ pipeline {
             steps {
                 checkout scm
                 sh """
-                    docker run --rm \
-                        -v "${WORKSPACE}:${WORKSPACE}" -w "${WORKSPACE}" \
-                        -e HOME=/tmp \
-                        node:${GLOBAL_CONFIG.nodeVersion}-alpine \
-                        sh -c 'npm install -g @cyclonedx/cyclonedx-npm --quiet 2>/dev/null; \
-                               cyclonedx-npm --output-format JSON \
-                                 --output-file ${REPORTS_DIR}/sbom.cdx.json 2>/dev/null || echo SBOM generation skipped' || true
-                    || true
+                    npm install -g @cyclonedx/cyclonedx-npm --quiet 2>/dev/null || true
+                    cyclonedx-npm --output-format JSON \
+                        --output-file ${REPORTS_DIR}/sbom.cdx.json 2>/dev/null || echo "SBOM generation skipped"
                     echo "✅ Checkout complete"
                 """
             }
@@ -224,15 +219,10 @@ pipeline {
         stage('Install & NPM Audit') {
             steps {
                 sh """
-                    docker run --rm \
-                        -v "${WORKSPACE}:${WORKSPACE}" -w "${WORKSPACE}" \
-                        -e HOME=/tmp \
-                        -e NODE_ENV=development \
-                        node:${GLOBAL_CONFIG.nodeVersion}-alpine \
-                        sh -c 'npm ci --prefer-offline 2>&1 && \
-                               npm audit --audit-level=high --json \
-                                 > ${REPORTS_DIR}/npm-audit/npm-audit.json 2>&1 || \
-                               (echo AUDIT_HAS_ISSUES=true && exit 0)'
+                    npm ci --prefer-offline 2>&1
+                    npm audit --audit-level=high --json \
+                        > ${REPORTS_DIR}/npm-audit/npm-audit.json 2>&1 || \
+                        echo "AUDIT_HAS_ISSUES=true"
                 """
                 script {
                     if (fileExists("${REPORTS_DIR}/npm-audit/npm-audit.json")) {
@@ -258,18 +248,15 @@ pipeline {
                 stage('Semgrep SAST') {
                     steps {
                         sh """
-                            docker run --rm \
-                                -v "${WORKSPACE}:${WORKSPACE}" -w "${WORKSPACE}" \
-                                semgrep/semgrep:latest \
-                                semgrep scan \
-                                  --config=p/nodejs \
-                                  --config=p/owasp-top-ten \
-                                  --config=p/secrets \
-                                  --json \
-                                  --output=${REPORTS_DIR}/sast/semgrep-results.json \
-                                  --timeout=60 \
-                                  --max-memory=1024 \
-                                  src/ 2>&1 | tee ${REPORTS_DIR}/sast/semgrep-stdout.txt || true
+                            semgrep scan \
+                                --config=p/nodejs \
+                                --config=p/owasp-top-ten \
+                                --config=p/secrets \
+                                --json \
+                                --output=${REPORTS_DIR}/sast/semgrep-results.json \
+                                --timeout=60 \
+                                --max-memory=1024 \
+                                src/ 2>&1 | tee ${REPORTS_DIR}/sast/semgrep-stdout.txt || true
                         """
                         script {
                             if (fileExists("${REPORTS_DIR}/sast/semgrep-results.json")) {
@@ -287,14 +274,9 @@ pipeline {
                 stage('ESLint Security') {
                     steps {
                         sh """
-                            docker run --rm \
-                                -v "${WORKSPACE}:${WORKSPACE}" -w "${WORKSPACE}" \
-                                -e HOME=/tmp \
-                                node:${GLOBAL_CONFIG.nodeVersion}-alpine \
-                                sh -c 'npm run lint:security -- \
-                                         --format json \
-                                         --output-file ${REPORTS_DIR}/sast/eslint-security.json 2>&1 || true' \
-                            || true
+                            npm run lint:security -- \
+                                --format json \
+                                --output-file ${REPORTS_DIR}/sast/eslint-security.json 2>&1 || true
                         """
                     }
                 }
@@ -308,18 +290,14 @@ pipeline {
         stage('Unit Tests & Coverage') {
             steps {
                 sh """
-                    docker run --rm \
-                        -v "${WORKSPACE}:${WORKSPACE}" -w "${WORKSPACE}" \
-                        -e HOME=/tmp -e NODE_ENV=test \
-                        node:${GLOBAL_CONFIG.nodeVersion}-alpine \
-                        sh -c 'npm run test:unit -- \
-                                 --ci \
-                                 --coverage \
-                                 --coverageReporters=lcov \
-                                 --coverageReporters=text \
-                                 --coverageReporters=json-summary \
-                                 --coverageDirectory=${REPORTS_DIR}/coverage \
-                                 --forceExit 2>&1 | tee ${REPORTS_DIR}/jest-unit.log'
+                    npm run test:unit -- \
+                        --ci \
+                        --coverage \
+                        --coverageReporters=lcov \
+                        --coverageReporters=text \
+                        --coverageReporters=json-summary \
+                        --coverageDirectory=${REPORTS_DIR}/coverage \
+                        --forceExit 2>&1 | tee ${REPORTS_DIR}/jest-unit.log
                 """
                 script {
                     if (fileExists("${REPORTS_DIR}/coverage/coverage-summary.json")) {
@@ -350,15 +328,9 @@ pipeline {
         stage('Integration Tests') {
             steps {
                 sh """
-                    docker run --rm \
-                        -v "${WORKSPACE}:${WORKSPACE}" -w "${WORKSPACE}" \
-                        -e HOME=/tmp -e NODE_ENV=test \
-                        -e DB_URI="memory://test" \
-                        -e JWT_SECRET="test-secret-for-ci-only" \
-                        node:${GLOBAL_CONFIG.nodeVersion}-alpine \
-                        sh -c 'npm run test:integration -- \
-                                 --ci --forceExit 2>&1 | tee ${REPORTS_DIR}/jest-integration.log' \
-                    || true
+                    DB_URI="memory://test" JWT_SECRET="test-secret-for-ci-only" \
+                        npm run test:integration -- \
+                        --ci --forceExit 2>&1 | tee ${REPORTS_DIR}/jest-integration.log || true
                 """
             }
             post { always { junit allowEmptyResults: true, testResults: '**/junit-integration*.xml' } }
@@ -408,9 +380,7 @@ pipeline {
                     } catch (e) { /* credential may not exist */ }
 
                     sh """
-                        docker run --rm \
-                            -v "${WORKSPACE}:${WORKSPACE}:ro" \
-                            owasp/dependency-check:latest \
+                        dependency-check \
                             --project "${APP_NAME}" \
                             --scan "${WORKSPACE}" \
                             --format JSON --format HTML \
@@ -442,13 +412,9 @@ pipeline {
                 sh """
                     mkdir -p "\${TRIVY_CACHE_DIR}"
 
-                    # SBOM + vulnerability scan — non-fatal exit so we can archive
-                    docker run --rm \
-                        -v /var/run/docker.sock:/var/run/docker.sock \
-                        -v "${WORKSPACE}:${WORKSPACE}" \
-                        -v "\${TRIVY_CACHE_DIR}:/tmp/trivy-cache" \
-                        aquasec/trivy:latest image \
-                        --cache-dir /tmp/trivy-cache \
+                    # SARIF output for archiving
+                    trivy image \
+                        --cache-dir "\${TRIVY_CACHE_DIR}" \
                         --severity CRITICAL,HIGH \
                         --format sarif \
                         --output "${WORKSPACE}/${REPORTS_DIR}/trivy/trivy-vuln.sarif" \
@@ -458,11 +424,8 @@ pipeline {
                         "${env.IMAGE_REF}" 2>&1 | tee ${REPORTS_DIR}/trivy/trivy-stdout.txt
 
                     # Table summary to console
-                    docker run --rm \
-                        -v /var/run/docker.sock:/var/run/docker.sock \
-                        -v "\${TRIVY_CACHE_DIR}:/tmp/trivy-cache" \
-                        aquasec/trivy:latest image \
-                        --cache-dir /tmp/trivy-cache \
+                    trivy image \
+                        --cache-dir "\${TRIVY_CACHE_DIR}" \
                         --severity CRITICAL,HIGH \
                         --format table \
                         --ignore-unfixed \
@@ -497,16 +460,13 @@ pipeline {
                     ZAP_TARGET="http://host.docker.internal:${SMOKE_PORT}"
 
                     docker run --rm \
-                        -v "${WORKSPACE}:${WORKSPACE}" \
                         ghcr.io/zaproxy/zaproxy:stable \
                         zap-baseline.py \
                         -t "\${ZAP_TARGET}" \
-                        -r "${WORKSPACE}/${REPORTS_DIR}/zap/zap-report.html" \
-                        -J "${WORKSPACE}/${REPORTS_DIR}/zap/zap-report.json" \
                         -l WARN \
                         -I 2>&1 | tee ${REPORTS_DIR}/zap/zap-stdout.txt || true
 
-                    echo "ZAP scan complete — review ${REPORTS_DIR}/zap/zap-report.html"
+                    echo "✅ ZAP baseline scan complete"
                 """
             }
             post {
@@ -527,17 +487,11 @@ pipeline {
             steps {
                 withCredentials([string(credentialsId: 'fossa-api-key', variable: 'FOSSA_API_KEY')]) {
                     sh """
-                        docker run --rm \
-                            -v "${WORKSPACE}:${WORKSPACE}" -w "${WORKSPACE}" \
-                            -e FOSSA_API_KEY="\${FOSSA_API_KEY}" \
-                            fossas/fossa-cli:latest \
-                            analyze --debug 2>&1 | tee ${REPORTS_DIR}/licence/fossa-analyze.log || true
+                        FOSSA_API_KEY="\${FOSSA_API_KEY}" \
+                            fossa analyze --debug 2>&1 | tee ${REPORTS_DIR}/licence/fossa-analyze.log || true
 
-                        docker run --rm \
-                            -v "${WORKSPACE}:${WORKSPACE}" -w "${WORKSPACE}" \
-                            -e FOSSA_API_KEY="\${FOSSA_API_KEY}" \
-                            fossas/fossa-cli:latest \
-                            test --json 2>&1 > ${REPORTS_DIR}/licence/fossa-test.json || true
+                        FOSSA_API_KEY="\${FOSSA_API_KEY}" \
+                            fossa test --json 2>&1 > ${REPORTS_DIR}/licence/fossa-test.json || true
 
                         echo "✅ Licence compliance scan complete"
                     """
