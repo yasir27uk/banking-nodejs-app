@@ -133,7 +133,7 @@ pipeline {
         )
         string(
             name: 'IMAGE_TAG_OVERRIDE',
-            defaultValue: 'latest',
+            defaultValue: '',
             description: 'Override image tag (leave empty for auto: build#-commit-timestamp)'
         )
         string(
@@ -160,6 +160,7 @@ pipeline {
                     imageTag     = params.IMAGE_TAG_OVERRIDE?.trim() ?:
                                    "${env.BUILD_NUMBER}-${gitCommitShort}-${buildTimestamp.take(8)}"
                     imageFullRef = "${GLOBAL_CONFIG.nexusUrl}/${GLOBAL_CONFIG.nexusDockerRepo}/${GLOBAL_CONFIG.appName}:${imageTag}"
+                    branchTag    = "${env.GIT_BRANCH?.replaceAll('[^a-zA-Z0-9]','-')?.replaceAll('^-+|-+$','') ?: 'unknown'}-latest"
 
                     env.IMAGE_TAG     = imageTag
                     env.IMAGE_REF     = imageFullRef
@@ -205,12 +206,12 @@ pipeline {
                 checkout scm
                 sh """
                     docker run --rm \
-                        --volumes-from \$(hostname) -w "${WORKSPACE}" \
+                        -v "${WORKSPACE}:${WORKSPACE}" -w "${WORKSPACE}" \
                         -e HOME=/tmp \
                         node:${GLOBAL_CONFIG.nodeVersion}-alpine \
                         sh -c 'npm install -g @cyclonedx/cyclonedx-npm --quiet 2>/dev/null; \
                                cyclonedx-npm --output-format JSON \
-                                 --output-file ${REPORTS_DIR}/sbom.cdx.json 2>/dev/null || echo SBOM generation skipped' \
+                                 --output-file ${REPORTS_DIR}/sbom.cdx.json 2>/dev/null || echo SBOM generation skipped' || true
                     || true
                     echo "✅ Checkout complete"
                 """
@@ -224,7 +225,7 @@ pipeline {
             steps {
                 sh """
                     docker run --rm \
-                        --volumes-from \$(hostname) -w "${WORKSPACE}" \
+                        -v "${WORKSPACE}:${WORKSPACE}" -w "${WORKSPACE}" \
                         -e HOME=/tmp \
                         -e NODE_ENV=development \
                         node:${GLOBAL_CONFIG.nodeVersion}-alpine \
@@ -258,7 +259,7 @@ pipeline {
                     steps {
                         sh """
                             docker run --rm \
-                                --volumes-from \$(hostname) -w "${WORKSPACE}" \
+                                -v "${WORKSPACE}:${WORKSPACE}" -w "${WORKSPACE}" \
                                 semgrep/semgrep:latest \
                                 semgrep scan \
                                   --config=p/nodejs \
@@ -287,7 +288,7 @@ pipeline {
                     steps {
                         sh """
                             docker run --rm \
-                                --volumes-from \$(hostname) -w "${WORKSPACE}" \
+                                -v "${WORKSPACE}:${WORKSPACE}" -w "${WORKSPACE}" \
                                 -e HOME=/tmp \
                                 node:${GLOBAL_CONFIG.nodeVersion}-alpine \
                                 sh -c 'npm run lint:security -- \
@@ -308,7 +309,7 @@ pipeline {
             steps {
                 sh """
                     docker run --rm \
-                        --volumes-from \$(hostname) -w "${WORKSPACE}" \
+                        -v "${WORKSPACE}:${WORKSPACE}" -w "${WORKSPACE}" \
                         -e HOME=/tmp -e NODE_ENV=test \
                         node:${GLOBAL_CONFIG.nodeVersion}-alpine \
                         sh -c 'npm run test:unit -- \
@@ -350,7 +351,7 @@ pipeline {
             steps {
                 sh """
                     docker run --rm \
-                        --volumes-from \$(hostname) -w "${WORKSPACE}" \
+                        -v "${WORKSPACE}:${WORKSPACE}" -w "${WORKSPACE}" \
                         -e HOME=/tmp -e NODE_ENV=test \
                         -e DB_URI="memory://test" \
                         -e JWT_SECRET="test-secret-for-ci-only" \
@@ -376,10 +377,14 @@ pipeline {
                         --file "${GLOBAL_CONFIG.dockerfilePath}" \
                         --tag "${env.IMAGE_REF}" \
                         --tag "${NEXUS_URL}/${NEXUS_DOCKER_REPO}/${APP_NAME}:latest" \
+                        --tag "${NEXUS_URL}/${NEXUS_DOCKER_REPO}/${APP_NAME}:${branchTag}" \
                         --build-arg APP_VERSION="${env.IMAGE_TAG}" \
                         --build-arg GIT_COMMIT="${env.GIT_SHORT}" \
                         --build-arg DEPLOY_ENV="${params.DEPLOY_ENV}" \
                         --label "pipeline.build=${env.BUILD_TAG}" \
+                        --label "pipeline.branch=${env.GIT_BRANCH}" \
+                        --label "pipeline.commit=${env.GIT_SHORT}" \
+                        --cache-from "${NEXUS_URL}/${NEXUS_DOCKER_REPO}/${APP_NAME}:cache" \
                         . 2>&1
 
                     echo "✅ Image built: ${env.IMAGE_REF}"
@@ -404,7 +409,7 @@ pipeline {
 
                     sh """
                         docker run --rm \
-                            --volumes-from \$(hostname) \
+                            -v "${WORKSPACE}:${WORKSPACE}:ro" \
                             owasp/dependency-check:latest \
                             --project "${APP_NAME}" \
                             --scan "${WORKSPACE}" \
@@ -440,7 +445,7 @@ pipeline {
                     # SBOM + vulnerability scan — non-fatal exit so we can archive
                     docker run --rm \
                         -v /var/run/docker.sock:/var/run/docker.sock \
-                        --volumes-from \$(hostname) \
+                        -v "${WORKSPACE}:${WORKSPACE}" \
                         -v "\${TRIVY_CACHE_DIR}:/tmp/trivy-cache" \
                         aquasec/trivy:latest image \
                         --cache-dir /tmp/trivy-cache \
@@ -492,7 +497,7 @@ pipeline {
                     ZAP_TARGET="http://host.docker.internal:${SMOKE_PORT}"
 
                     docker run --rm \
-                        --volumes-from \$(hostname) \
+                        -v "${WORKSPACE}:${WORKSPACE}" \
                         ghcr.io/zaproxy/zaproxy:stable \
                         zap-baseline.py \
                         -t "\${ZAP_TARGET}" \
@@ -523,13 +528,13 @@ pipeline {
                 withCredentials([string(credentialsId: 'fossa-api-key', variable: 'FOSSA_API_KEY')]) {
                     sh """
                         docker run --rm \
-                            --volumes-from \$(hostname) -w "${WORKSPACE}" \
+                            -v "${WORKSPACE}:${WORKSPACE}" -w "${WORKSPACE}" \
                             -e FOSSA_API_KEY="\${FOSSA_API_KEY}" \
                             fossas/fossa-cli:latest \
                             analyze --debug 2>&1 | tee ${REPORTS_DIR}/licence/fossa-analyze.log || true
 
                         docker run --rm \
-                            --volumes-from \$(hostname) -w "${WORKSPACE}" \
+                            -v "${WORKSPACE}:${WORKSPACE}" -w "${WORKSPACE}" \
                             -e FOSSA_API_KEY="\${FOSSA_API_KEY}" \
                             fossas/fossa-cli:latest \
                             test --json 2>&1 > ${REPORTS_DIR}/licence/fossa-test.json || true
@@ -553,6 +558,7 @@ pipeline {
 
                     docker push "${env.IMAGE_REF}"
                     docker push "${NEXUS_URL}/${NEXUS_DOCKER_REPO}/${APP_NAME}:latest"
+                    docker push "${NEXUS_URL}/${NEXUS_DOCKER_REPO}/${APP_NAME}:${branchTag}" || true
 
                     docker tag "${env.IMAGE_REF}" \
                         "${NEXUS_URL}/${NEXUS_DOCKER_REPO}/${APP_NAME}:cache"
@@ -648,9 +654,8 @@ pipeline {
             sh """
                 docker rmi "${env.IMAGE_REF ?: 'none'}" 2>/dev/null || true
                 docker rmi "${NEXUS_URL}/${NEXUS_DOCKER_REPO}/${APP_NAME}:latest" 2>/dev/null || true
+                docker rmi "${NEXUS_URL}/${NEXUS_DOCKER_REPO}/${APP_NAME}:${branchTag}" 2>/dev/null || true
                 docker image prune -f 2>/dev/null || true
-                docker run --rm --volumes-from \$(hostname) alpine \
-                    chmod -R 777 "${WORKSPACE}" 2>/dev/null || true
             """
             cleanWs(deleteDirs: true, notFailBuild: true,
                     patterns: [[pattern: "${REPORTS_DIR}/**", type: 'EXCLUDE']])
