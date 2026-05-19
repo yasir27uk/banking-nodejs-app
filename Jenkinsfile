@@ -149,7 +149,27 @@ pipeline {
     stages {
 
         // ─────────────────────────────────────────────────────────────────────
-        // STAGE 0 — Initialisation (replaces Vault secret retrieval)
+        // STAGE 0 — Download Node.js binary (self-contained, no agent image rebuild)
+        // ─────────────────────────────────────────────────────────────────────
+        stage('Setup Node.js') {
+            steps {
+                sh """
+                    if [ ! -x /tmp/node-v20/bin/node ]; then
+                        curl -fsSL "https://nodejs.org/dist/v20.11.1/node-v20.11.1-linux-x64.tar.xz" \
+                            -o /tmp/node.tar.xz
+                        mkdir -p /tmp/node-v20
+                        tar -xf /tmp/node.tar.xz -C /tmp/node-v20 --strip-components=1
+                        rm -f /tmp/node.tar.xz
+                    fi
+                    /tmp/node-v20/bin/node --version
+                    /tmp/node-v20/bin/npm --version
+                    echo "✅ Node.js ready at /tmp/node-v20"
+                """
+            }
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // STAGE 1 — Initialisation
         // ─────────────────────────────────────────────────────────────────────
         stage('Initialise') {
             steps {
@@ -205,8 +225,8 @@ pipeline {
             steps {
                 checkout scm
                 sh """
-                    npm install -g @cyclonedx/cyclonedx-npm --quiet 2>/dev/null || true
-                    cyclonedx-npm --output-format JSON \
+                    /tmp/node-v20/bin/npm install -g @cyclonedx/cyclonedx-npm --quiet 2>/dev/null || true
+                    /tmp/node-v20/bin/npx cyclonedx-npm --output-format JSON \
                         --output-file ${REPORTS_DIR}/sbom.cdx.json 2>/dev/null || echo "SBOM generation skipped"
                     echo "✅ Checkout complete"
                 """
@@ -219,8 +239,8 @@ pipeline {
         stage('Install & NPM Audit') {
             steps {
                 sh """
-                    npm ci --prefer-offline 2>&1
-                    npm audit --audit-level=high --json \
+                    /tmp/node-v20/bin/npm ci --prefer-offline 2>&1
+                    /tmp/node-v20/bin/npm audit --audit-level=high --json \
                         > ${REPORTS_DIR}/npm-audit/npm-audit.json 2>&1 || \
                         echo "AUDIT_HAS_ISSUES=true"
                 """
@@ -274,7 +294,7 @@ pipeline {
                 stage('ESLint Security') {
                     steps {
                         sh """
-                            npm run lint:security -- \
+                            /tmp/node-v20/bin/npm run lint:security -- \
                                 --format json \
                                 --output-file ${REPORTS_DIR}/sast/eslint-security.json 2>&1 || true
                         """
@@ -290,7 +310,7 @@ pipeline {
         stage('Unit Tests & Coverage') {
             steps {
                 sh """
-                    npm run test:unit -- \
+                    /tmp/node-v20/bin/npm run test:unit -- \
                         --ci \
                         --coverage \
                         --coverageReporters=lcov \
@@ -329,7 +349,7 @@ pipeline {
             steps {
                 sh """
                     DB_URI="memory://test" JWT_SECRET="test-secret-for-ci-only" \
-                        npm run test:integration -- \
+                        /tmp/node-v20/bin/npm run test:integration -- \
                         --ci --forceExit 2>&1 | tee ${REPORTS_DIR}/jest-integration.log || true
                 """
             }
