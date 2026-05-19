@@ -155,11 +155,11 @@ pipeline {
             steps {
                 sh """
                     if [ ! -x /tmp/node-v20/bin/node ]; then
-                        curl -fsSL "https://nodejs.org/dist/v20.11.1/node-v20.11.1-linux-x64.tar.xz" \
-                            -o /tmp/node.tar.xz
+                        curl -fsSL "https://nodejs.org/dist/v20.11.1/node-v20.11.1-linux-x64.tar.gz" \
+                            -o /tmp/node.tar.gz
                         mkdir -p /tmp/node-v20
-                        tar -xf /tmp/node.tar.xz -C /tmp/node-v20 --strip-components=1
-                        rm -f /tmp/node.tar.xz
+                        tar -xzf /tmp/node.tar.gz -C /tmp/node-v20 --strip-components=1
+                        rm -f /tmp/node.tar.gz
                     fi
                     /tmp/node-v20/bin/node --version
                     /tmp/node-v20/bin/npm --version
