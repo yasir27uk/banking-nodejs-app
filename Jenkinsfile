@@ -68,8 +68,9 @@ pipeline {
     // ── Environment ───────────────────────────────────────────────────────────
     environment {
         APP_NAME          = "${GLOBAL_CONFIG.appName}"
-        NEXUS_URL         = "${GLOBAL_CONFIG.nexusUrl}"
-        NEXUS_DOCKER_REPO = "${GLOBAL_CONFIG.nexusDockerRepo}"
+        // Resolved at runtime from build parameters so they can be overridden per-run
+        NEXUS_URL         = "${params.NEXUS_REGISTRY_URL ?: GLOBAL_CONFIG.nexusUrl}"
+        NEXUS_DOCKER_REPO = "${params.NEXUS_REPOSITORY   ?: GLOBAL_CONFIG.nexusDockerRepo}"
         REPORTS_DIR       = 'pipeline-reports'
         TRIVY_CACHE_DIR   = '/tmp/.trivy-cache'
         NODE_ENV          = 'test'
@@ -133,6 +134,16 @@ pipeline {
             name: 'FORCE_DEPLOY',
             defaultValue: false,
             description: 'Force deploy even with non-critical scan findings'
+        )
+        string(
+            name: 'NEXUS_REGISTRY_URL',
+            defaultValue: 'localhost:80',
+            description: 'Nexus Docker registry URL (host:port) — e.g. nexus.example.com:8082'
+        )
+        string(
+            name: 'NEXUS_REPOSITORY',
+            defaultValue: 'repository/docker-hosted',
+            description: 'Nexus Docker repository path — e.g. repository/docker-hosted'
         )
         string(
             name: 'IMAGE_TAG_OVERRIDE',
