@@ -55,6 +55,7 @@ def GLOBAL_CONFIG = [
 // ── Computed at runtime ──────────────────────────────────────────────────────
 def imageTag     = ''
 def imageFullRef = ''
+def branchTag    = ''
 
 // =============================================================================
 // PIPELINE DEFINITION
@@ -161,16 +162,18 @@ pipeline {
                         NODE_ARCH="linux-x64"
                     fi
 
-                    # Remove cached binary if wrong architecture (agent /tmp persists across builds)
-                    if [ -f /tmp/node-v20/bin/node ]; then
-                        CACHED_ARCH=\$(file /tmp/node-v20/bin/node | grep -o 'x86-64\\|aarch64' || echo 'unknown')
-                        if [ "\$NODE_ARCH" = "linux-arm64" ] && echo "\$CACHED_ARCH" | grep -q 'x86-64'; then
-                            echo "Removing cached x64 Node.js (need arm64)"
-                            rm -rf /tmp/node-v20
-                        elif [ "\$NODE_ARCH" = "linux-x64" ] && echo "\$CACHED_ARCH" | grep -q 'aarch64'; then
-                            echo "Removing cached arm64 Node.js (need x64)"
+                    # Remove cached binary if wrong architecture — compare against stored .arch stamp
+                    # (avoids dependency on 'file' command which is not available in all agent images)
+                    if [ -f /tmp/node-v20/.arch ]; then
+                        CACHED_ARCH=\$(cat /tmp/node-v20/.arch)
+                        if [ "\$CACHED_ARCH" != "\$NODE_ARCH" ]; then
+                            echo "Removing cached \$CACHED_ARCH Node.js (need \$NODE_ARCH)"
                             rm -rf /tmp/node-v20
                         fi
+                    elif [ -d /tmp/node-v20 ]; then
+                        # Directory exists but no .arch stamp — unknown provenance, purge it
+                        echo "No .arch stamp found — purging /tmp/node-v20 to be safe"
+                        rm -rf /tmp/node-v20
                     fi
 
                     if [ ! -x /tmp/node-v20/bin/node ]; then
@@ -180,6 +183,7 @@ pipeline {
                         mkdir -p /tmp/node-v20
                         tar -xzf /tmp/node.tar.gz -C /tmp/node-v20 --strip-components=1
                         rm -f /tmp/node.tar.gz
+                        echo "\$NODE_ARCH" > /tmp/node-v20/.arch
                     fi
                     /tmp/node-v20/bin/node --version
                     /tmp/node-v20/bin/npm --version
