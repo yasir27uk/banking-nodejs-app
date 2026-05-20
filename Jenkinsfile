@@ -211,12 +211,16 @@ pipeline {
         stage('Initialise') {
             steps {
                 script {
+                    // Strip any http:// or https:// scheme — Docker image refs must be scheme-free
+                    env.NEXUS_URL = env.NEXUS_URL.replaceAll('^https?://', '')
+
                     def gitCommitShort = sh(script: 'git rev-parse --short HEAD 2>/dev/null || echo unknown', returnStdout: true).trim()
                     def buildTimestamp = sh(script: 'date -u +%Y%m%d%H%M%S', returnStdout: true).trim()
 
                     imageTag     = params.IMAGE_TAG_OVERRIDE?.trim() ?:
                                    "${env.BUILD_NUMBER}-${gitCommitShort}-${buildTimestamp.take(8)}"
-                    imageFullRef = "${GLOBAL_CONFIG.nexusUrl}/${GLOBAL_CONFIG.nexusDockerRepo}/${GLOBAL_CONFIG.appName}:${imageTag}"
+                    // Use runtime env vars (resolved from params) so overrides take effect here too
+                    imageFullRef = "${env.NEXUS_URL}/${env.NEXUS_DOCKER_REPO}/${GLOBAL_CONFIG.appName}:${imageTag}"
                     branchTag    = "${env.GIT_BRANCH?.replaceAll('[^a-zA-Z0-9]','-')?.replaceAll('^-+|-+$','') ?: 'unknown'}-latest"
 
                     env.IMAGE_TAG     = imageTag
@@ -331,6 +335,8 @@ pipeline {
                 stage('ESLint Security') {
                     steps {
                         sh """
+                            # Ensure the custom rules dir exists so ESLint doesn't abort before scanning
+                            mkdir -p .eslint-security-rules
                             /tmp/node-v20/bin/npm run lint:security -- \
                                 --format json \
                                 --output-file ${REPORTS_DIR}/sast/eslint-security.json 2>&1 || true
