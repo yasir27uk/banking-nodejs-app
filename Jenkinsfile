@@ -463,28 +463,32 @@ pipeline {
                 sh """
                     mkdir -p "\${TRIVY_CACHE_DIR}"
 
-                    # SARIF output for archiving
-                    trivy image \
-                        --cache-dir "\${TRIVY_CACHE_DIR}" \
-                        --severity CRITICAL,HIGH \
-                        --format sarif \
-                        --output "${WORKSPACE}/${REPORTS_DIR}/trivy/trivy-vuln.sarif" \
-                        --ignore-unfixed \
-                        --skip-dirs /usr/local/lib/node_modules/npm \
-                        --exit-code 0 \
-                        "${env.IMAGE_REF}" 2>&1 | tee ${REPORTS_DIR}/trivy/trivy-stdout.txt
+                    if ! command -v trivy >/dev/null 2>&1; then
+                        echo "WARN: trivy not installed on this agent — skipping container scan"
+                    else
+                        # SARIF output for archiving
+                        trivy image \
+                            --cache-dir "\${TRIVY_CACHE_DIR}" \
+                            --severity CRITICAL,HIGH \
+                            --format sarif \
+                            --output "${WORKSPACE}/${REPORTS_DIR}/trivy/trivy-vuln.sarif" \
+                            --ignore-unfixed \
+                            --skip-dirs /usr/local/lib/node_modules/npm \
+                            --exit-code 0 \
+                            "${env.IMAGE_REF}" 2>&1 | tee ${REPORTS_DIR}/trivy/trivy-stdout.txt
 
-                    # Table summary to console
-                    trivy image \
-                        --cache-dir "\${TRIVY_CACHE_DIR}" \
-                        --severity CRITICAL,HIGH \
-                        --format table \
-                        --ignore-unfixed \
-                        --skip-dirs /usr/local/lib/node_modules/npm \
-                        --exit-code 0 \
-                        "${env.IMAGE_REF}"
+                        # Table summary to console
+                        trivy image \
+                            --cache-dir "\${TRIVY_CACHE_DIR}" \
+                            --severity CRITICAL,HIGH \
+                            --format table \
+                            --ignore-unfixed \
+                            --skip-dirs /usr/local/lib/node_modules/npm \
+                            --exit-code 0 \
+                            "${env.IMAGE_REF}"
 
-                    echo "✅ Trivy container scan complete"
+                        echo "✅ Trivy container scan complete"
+                    fi
                 """
                 script {
                     if (fileExists("${REPORTS_DIR}/trivy/trivy-vuln.sarif")) {
