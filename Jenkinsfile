@@ -38,7 +38,7 @@ def GLOBAL_CONFIG = [
     // Nexus — local Docker Desktop instance
     nexusUrl          : 'localhost:80',
     nexusCredId       : 'nexus-credentials',
-    nexusDockerRepo   : 'repository/docker-hosted',
+    nexusDockerRepo   : 'infrastructure',
 
     // Application
     appName           : 'banking-nodejs-app',
@@ -142,8 +142,8 @@ pipeline {
         )
         string(
             name: 'NEXUS_REPOSITORY',
-            defaultValue: 'repository/docker-hosted',
-            description: 'Nexus Docker repository path — e.g. repository/docker-hosted'
+            defaultValue: 'infrastructure',
+            description: 'Nexus Docker repository name — e.g. infrastructure or docker-hosted'
         )
         string(
             name: 'IMAGE_TAG_OVERRIDE',
