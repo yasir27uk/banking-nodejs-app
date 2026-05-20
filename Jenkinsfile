@@ -73,7 +73,7 @@ pipeline {
         REPORTS_DIR       = 'pipeline-reports'
         TRIVY_CACHE_DIR   = '/tmp/.trivy-cache'
         NODE_ENV          = 'test'
-        DOCKER_BUILDKIT   = '0'
+        DOCKER_BUILDKIT   = '1'
         SMOKE_PORT        = '19090'
         SMOKE_CONTAINER   = "banking-smoke-${env.BUILD_NUMBER ?: '0'}"
         // Prepend the downloaded Node.js bin dir so 'npm' shebang (#!/usr/bin/env node) resolves
