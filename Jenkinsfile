@@ -76,6 +76,8 @@ pipeline {
         DOCKER_BUILDKIT   = '0'
         SMOKE_PORT        = '19090'
         SMOKE_CONTAINER   = "banking-smoke-${env.BUILD_NUMBER ?: '0'}"
+        // Prepend the downloaded Node.js bin dir so 'npm' shebang (#!/usr/bin/env node) resolves
+        PATH              = "/tmp/node-v20/bin:${env.PATH}"
         // Credentials — NEXUS_CREDS_USR / NEXUS_CREDS_PSW auto-injected
         NEXUS_CREDS       = credentials('nexus-credentials')
     }
