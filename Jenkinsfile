@@ -337,9 +337,10 @@ pipeline {
                         sh """
                             # Ensure the custom rules dir exists so ESLint doesn't abort before scanning
                             mkdir -p .eslint-security-rules
-                            /tmp/node-v20/bin/npm run lint:security -- \
-                                --format json \
-                                --output-file ${REPORTS_DIR}/sast/eslint-security.json 2>&1 || true
+                            # Run lint:security and redirect output to file
+                            # (--format json and --output-file conflict in ESLint 8 causing circular JSON error)
+                            /tmp/node-v20/bin/npm run lint:security 2>&1 \
+                                > ${REPORTS_DIR}/sast/eslint-security.json || true
                         """
                     }
                 }
