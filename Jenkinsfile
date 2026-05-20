@@ -391,7 +391,11 @@ pipeline {
                     echo "\${NEXUS_CREDS_PSW}" | docker login '${NEXUS_URL}' \
                         --username "\${NEXUS_CREDS_USR}" --password-stdin 2>/dev/null || true
 
+                    # Remove any locally cached base images so Docker re-pulls the correct arch
+                    docker rmi node:20-alpine 2>/dev/null || true
+
                     docker build \
+                        --pull \
                         --file "${GLOBAL_CONFIG.dockerfilePath}" \
                         --tag "${env.IMAGE_REF}" \
                         --tag "${NEXUS_URL}/${NEXUS_DOCKER_REPO}/${APP_NAME}:latest" \
